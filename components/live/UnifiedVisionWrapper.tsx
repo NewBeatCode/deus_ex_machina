@@ -186,7 +186,6 @@ export const UnifiedVisionWrapper = ({
         let totalGenerationsSampled = 0;
         let injectionCount = 0;
         let lastGestureName = "none";
-        let lastGestureTime = 0;
         let objectDetectorLoading = false;
         const creationTime = Date.now();
         let nextHandId = 1;
@@ -358,15 +357,10 @@ export const UnifiedVisionWrapper = ({
           initModels();
         };
 
-        let isDragging = false;
-
-        p.mousePressed = () => {
-          isDragging = false;
-        };
+        p.mousePressed = () => {};
 
         p.mouseDragged = () => {
           if (grid) {
-            isDragging = true;
             grid.setPan(p.mouseX - p.pmouseX, p.mouseY - p.pmouseY);
           }
         };
@@ -430,7 +424,10 @@ export const UnifiedVisionWrapper = ({
             handPose = hp;
             startDetection(handPose, (r: any[]) => {
               rawHands = r;
-              console.log("[handpose-callback] rawHands.length:", r?.length ?? "undefined");
+              console.log(
+                "[handpose-callback] rawHands.length:",
+                r?.length ?? "undefined",
+              );
             });
             updateStepStatus("handpose", "completed");
 
@@ -685,11 +682,26 @@ export const UnifiedVisionWrapper = ({
         }
 
         const HAND_CONNECTIONS = [
-          [0, 1], [1, 2], [2, 3], [3, 4],
-          [0, 5], [5, 6], [6, 7], [7, 8],
-          [0, 9], [9, 10], [10, 11], [11, 12],
-          [0, 13], [13, 14], [14, 15], [15, 16],
-          [0, 17], [17, 18], [18, 19], [19, 20],
+          [0, 1],
+          [1, 2],
+          [2, 3],
+          [3, 4],
+          [0, 5],
+          [5, 6],
+          [6, 7],
+          [7, 8],
+          [0, 9],
+          [9, 10],
+          [10, 11],
+          [11, 12],
+          [0, 13],
+          [13, 14],
+          [14, 15],
+          [15, 16],
+          [0, 17],
+          [17, 18],
+          [18, 19],
+          [19, 20],
         ];
         function drawHands() {
           if (!hands.length) return;
@@ -800,12 +812,13 @@ export const UnifiedVisionWrapper = ({
                 lastGestureName = `hand pan @ ${grid.generation}`;
               }
             }
-
           }
 
           // Creating cells with BOTH hands using a triangle gesture:
           // thumbs together + index fingers together = triangle
-          const gestureHands = hands.filter((h) => h.confidence > 0.1).slice(0, 2);
+          const gestureHands = hands
+            .filter((h) => h.confidence > 0.1)
+            .slice(0, 2);
 
           if (gestureHands.length === 2) {
             const handA = gestureHands[0];
@@ -831,8 +844,10 @@ export const UnifiedVisionWrapper = ({
               const triangleReady = thumbsTouching && indexesTouching;
 
               // Triangle geometry: thumbs form the base, midpoint of indexes is the apex
-              const triCenterX = (aThumb.x + bThumb.x + (aIndex.x + bIndex.x) / 2) / 3;
-              const triCenterY = (aThumb.y + bThumb.y + (aIndex.y + bIndex.y) / 2) / 3;
+              const triCenterX =
+                (aThumb.x + bThumb.x + (aIndex.x + bIndex.x) / 2) / 3;
+              const triCenterY =
+                (aThumb.y + bThumb.y + (aIndex.y + bIndex.y) / 2) / 3;
 
               if (triangleReady) {
                 p.push();
