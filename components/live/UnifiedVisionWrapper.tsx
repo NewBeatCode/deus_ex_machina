@@ -204,9 +204,15 @@ export const UnifiedVisionWrapper = ({
               if (hand.confidence < 0.1) continue;
               const wrist = hand.keypoints[0];
               let bestMatch: any = null;
-              let minDist = 150;
+              let minDist = Infinity;
               for (const sh of this.smoothed) {
                 if (usedSmoothed.has(sh)) continue;
+                // Prevent cross-hand matching (important when hands are close)
+                if (
+                  sh.handedness &&
+                  hand.handedness &&
+                  sh.handedness !== hand.handedness
+                ) continue;
                 const shWrist = sh.keypoints[0];
                 const d = p.dist(wrist.x, wrist.y, shWrist.x, shWrist.y);
                 if (d < minDist) {
@@ -216,26 +222,40 @@ export const UnifiedVisionWrapper = ({
               }
               if (bestMatch) {
                 usedSmoothed.add(bestMatch);
+                const wasLost = bestMatch.framesLost > 1;
                 bestMatch.framesLost = 0;
                 bestMatch.confidence = hand.confidence;
                 bestMatch.handedness = hand.handedness;
 
-                // Store previous palm position for drag/pan
-                bestMatch.prev_palm_x = bestMatch.keypoints[9].x;
-                bestMatch.prev_palm_y = bestMatch.keypoints[9].y;
-
-                for (let i = 0; i < hand.keypoints.length; i++) {
-                  bestMatch.keypoints[i].x = p.lerp(
-                    bestMatch.keypoints[i].x,
-                    hand.keypoints[i].x,
-                    this.smoothingFactor,
-                  );
-                  bestMatch.keypoints[i].y = p.lerp(
-                    bestMatch.keypoints[i].y,
-                    hand.keypoints[i].y,
-                    this.smoothingFactor,
-                  );
+                if (wasLost) {
+                  // On reacquisition, snap keypoints to the new detection
+                  // instead of lerping from stale frozen positions.
+                  // Square is hidden during lost frames, so no visual jump,
+                  // and this "reinitializes" the position fresh like at start.
+                  bestMatch.prev_palm_x = hand.keypoints[9].x;
+                  bestMatch.prev_palm_y = hand.keypoints[9].y;
+                  for (let i = 0; i < hand.keypoints.length; i++) {
+                    bestMatch.keypoints[i].x = hand.keypoints[i].x;
+                    bestMatch.keypoints[i].y = hand.keypoints[i].y;
+                  }
+                } else {
+                  // Normal smoothing for continuous tracking
+                  bestMatch.prev_palm_x = bestMatch.keypoints[9].x;
+                  bestMatch.prev_palm_y = bestMatch.keypoints[9].y;
+                  for (let i = 0; i < hand.keypoints.length; i++) {
+                    bestMatch.keypoints[i].x = p.lerp(
+                      bestMatch.keypoints[i].x,
+                      hand.keypoints[i].x,
+                      this.smoothingFactor,
+                    );
+                    bestMatch.keypoints[i].y = p.lerp(
+                      bestMatch.keypoints[i].y,
+                      hand.keypoints[i].y,
+                      this.smoothingFactor,
+                    );
+                  }
                 }
+
                 bestMatch.index_finger_tip = bestMatch.keypoints[8];
                 bestMatch.thumb_tip = bestMatch.keypoints[4];
               } else {
@@ -284,6 +304,7 @@ export const UnifiedVisionWrapper = ({
             this.yOff -= 1;
           }
           draw(p: p5) {
+            p.push();
             // Draw circle
             p.noFill();
             p.stroke(255, this.alpha);
@@ -305,6 +326,7 @@ export const UnifiedVisionWrapper = ({
             p.noStroke();
             p.fill(0, this.alpha); // Black text
             p.text(label, this.x, this.y + this.yOff - 25);
+            p.pop();
           }
         }
 
@@ -327,7 +349,7 @@ export const UnifiedVisionWrapper = ({
           p.pixelDensity(1);
           p.frameRate(CONFIG.frameRate);
           // Set font for canvas drawing
-          p.textFont("Roboto Mono, monospace");
+          p.textFont("IBM Plex Mono, monospace");
           updateScale();
           updateStepStatus("system", "completed");
 
@@ -707,23 +729,53 @@ export const UnifiedVisionWrapper = ({
           if (!hands.length) return;
           p.push();
 
-          // Determine the active navigating hand (persist ID if still present)
-          if (
-            !hands.find(
-              (h) => h.id === activeNavHandId && h.handedness === "Right",
-            )
-          ) {
-            activeNavHandId = null;
-          }
-          if (activeNavHandId === null) {
-            const suitableHand = hands.find((h) => h.handedness === "Right");
-            if (suitableHand) {
-              activeNavHandId = suitableHand.id;
+          // Determine active navigation hand: one grab at a time
+          let anyGrabbing = false;
+          for (const h of hands) {
+            if (h.confidence <= 0.1 || h.framesLost > 1) {
+              (h as any)._isGrab = false;
+              continue;
             }
+            const idxTip = h.index_finger_tip,
+              thbTip = h.thumb_tip;
+            let openCnt = 0;
+            const w = h.keypoints[0];
+            for (const [tip, pip] of [
+              [8, 6],
+              [12, 10],
+              [16, 14],
+              [20, 18],
+            ]) {
+              if (
+                p.dist(w.x, w.y, h.keypoints[tip].x, h.keypoints[tip].y) >
+                p.dist(w.x, w.y, h.keypoints[pip].x, h.keypoints[pip].y)
+              )
+                openCnt++;
+            }
+            const pinchDist =
+              idxTip && thbTip
+                ? p.dist(idxTip.x, idxTip.y, thbTip.x, thbTip.y)
+                : 100;
+            const isGrab =
+              openCnt <= 1 && pinchDist < 60 && h.prev_palm_x !== undefined;
+            if (isGrab) anyGrabbing = true;
+            (h as any)._isGrab = isGrab;
+          }
+
+          // Keep active hand only if still grabbing, else pick first grabbing hand
+          if (activeNavHandId !== null) {
+            const active = hands.find((h) => h.id === activeNavHandId);
+            if (!active || !(active as any)._isGrab) {
+              activeNavHandId = null;
+            }
+          }
+          if (activeNavHandId === null && anyGrabbing) {
+            const firstGrab = hands.find((h) => (h as any)._isGrab);
+            if (firstGrab) activeNavHandId = firstGrab.id;
           }
 
           for (const hand of hands) {
-            if (hand.confidence <= 0.1) continue;
+            if (hand.confidence <= 0.1 || hand.framesLost > 1) continue;
 
             // Draw skeleton connections
             p.stroke(255);
@@ -752,62 +804,43 @@ export const UnifiedVisionWrapper = ({
               }
             }
 
-            const indexTip = hand.index_finger_tip,
-              thumbTip = hand.thumb_tip;
-            let d = 100;
+            const isNavigating = hand.id === activeNavHandId;
 
-            // Five-finger hand gesture for panning
-            let openFingers = 0;
-            const pairs = [
-              [8, 6],
-              [12, 10],
-              [16, 14],
-              [20, 18],
-            ];
-            const wrist = hand.keypoints[0];
-            for (const [tip, pip] of pairs) {
-              const dTip = p.dist(
-                wrist.x,
-                wrist.y,
-                hand.keypoints[tip].x,
-                hand.keypoints[tip].y,
-              );
-              const dPip = p.dist(
-                wrist.x,
-                wrist.y,
-                hand.keypoints[pip].x,
-                hand.keypoints[pip].y,
-              );
-              if (dTip > dPip) openFingers++;
-            }
-
-            if (indexTip && thumbTip) {
-              d = p.dist(indexTip.x, indexTip.y, thumbTip.x, thumbTip.y);
-            }
-
-            const isRightHand = hand.handedness === "Right";
-            const isNavigatingHand = isRightHand && hand.id === activeNavHandId;
-
-            // If an open hand (at least 3 fingers extended) and navigating with RIGHT hand
-            if (
-              isNavigatingHand &&
-              openFingers >= 3 &&
-              d > 40 &&
-              hand.prev_palm_x !== undefined
-            ) {
+            if (isNavigating && (hand as any)._isGrab && hand.framesLost === 0) {
               const dx = hand.keypoints[9].x - hand.prev_palm_x;
               const dy = hand.keypoints[9].y - hand.prev_palm_y;
+              const isDragging = Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5;
 
-              // Draw indicator circle around the active navigating hand
+              // White outline square centered on wrist-palm midpoint (stable anchor)
+              const wrist = hand.keypoints[0];
+              const palmMCP = hand.keypoints[9];
+              const cx = (wrist.x + palmMCP.x) / 2;
+              const cy = (wrist.y + palmMCP.y) / 2;
+
+              let minX = Infinity,
+                minY = Infinity,
+                maxX = -Infinity,
+                maxY = -Infinity;
+              for (const kp of hand.keypoints) {
+                if (kp.x < minX) minX = kp.x;
+                if (kp.y < minY) minY = kp.y;
+                if (kp.x > maxX) maxX = kp.x;
+                if (kp.y > maxY) maxY = kp.y;
+              }
+              const rawSize = Math.max(maxX - minX, maxY - minY) + 20;
+              const prevSize = (hand as any)._smoothSize ?? rawSize;
+              const sqSize = p.lerp(prevSize, rawSize, 0.25);
+              (hand as any)._smoothSize = sqSize;
+
               p.push();
+              p.rectMode(p.CENTER);
               p.noFill();
-              p.stroke(CONFIG.colors.accent[3]); // Teal highlight
-              p.strokeWeight(3);
-              // Circle around the center of the palm
-              p.circle(hand.keypoints[9].x, hand.keypoints[9].y, 100);
+              p.stroke(255);
+              p.strokeWeight(5);
+              p.square(cx, cy, sqSize);
               p.pop();
 
-              if (grid && (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5)) {
+              if (grid && isDragging) {
                 grid.setPan(dx * scale, dy * scale);
                 lastGestureName = `hand pan @ ${grid.generation}`;
               }
@@ -817,7 +850,7 @@ export const UnifiedVisionWrapper = ({
           // Creating cells with BOTH hands using a triangle gesture:
           // thumbs together + index fingers together = triangle
           const gestureHands = hands
-            .filter((h) => h.confidence > 0.1)
+            .filter((h) => h.confidence > 0.1 && h.framesLost <= 1)
             .slice(0, 2);
 
           if (gestureHands.length === 2) {
@@ -850,10 +883,23 @@ export const UnifiedVisionWrapper = ({
                 (aThumb.y + bThumb.y + (aIndex.y + bIndex.y) / 2) / 3;
 
               if (triangleReady) {
+                const aWrist = handA.keypoints[0];
+                const bWrist = handB.keypoints[0];
+                const apexX = (aIndex.x + bIndex.x) / 2;
+                const apexY = (aIndex.y + bIndex.y) / 2;
+
                 p.push();
-                p.noStroke();
-                p.fill(80, 220, 120, 220);
-                p.circle(triCenterX, triCenterY, 14);
+                p.noFill();
+                p.stroke(255, 255, 255, 255);
+                p.strokeWeight(10);
+                p.triangle(
+                  aWrist.x,
+                  aWrist.y,
+                  bWrist.x,
+                  bWrist.y,
+                  apexX,
+                  apexY,
+                );
                 p.pop();
 
                 // Spawn cells at the triangle center (single burst per gesture)
