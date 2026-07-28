@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSCameraUsageDescription</key>
+    <string>Deus Ex Machina needs camera access for real-time face, hand, and body tracking.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Deus Ex Machina may use the microphone for interactive audio-reactive visuals.</string>
+</dict>
+</plist>

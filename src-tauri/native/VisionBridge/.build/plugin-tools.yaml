@@ -1,0 +1,66 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "PackageStructure": ["<PackageStructure>"]
+  "VisionBridge-arm64-apple-macosx26.0-release.a": ["<VisionBridge-arm64-apple-macosx26.0-release.a>"]
+  "VisionBridge-arm64-apple-macosx26.0-release.module": ["<VisionBridge-arm64-apple-macosx26.0-release.module>"]
+  "main": ["<VisionBridge-arm64-apple-macosx26.0-release.a>","<VisionBridge-arm64-apple-macosx26.0-release.module>"]
+  "test": ["<VisionBridge-arm64-apple-macosx26.0-release.a>","<VisionBridge-arm64-apple-macosx26.0-release.module>"]
+default: "main"
+nodes:
+  "/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/Sources/VisionBridge/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+commands:
+  "/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/Sources/VisionBridge/VisionBridge.swift"]
+    outputs: ["/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/sources"]
+    description: "Write auxiliary file /Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/sources"
+
+  "/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs: ["<link-file-list>","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/VisionBridge.swift.o"]
+    outputs: ["/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.product/Objects.LinkFileList"]
+    description: "Write auxiliary file /Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.product/Objects.LinkFileList"
+
+  "/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Library/Developer/CommandLineTools/usr/bin/swiftc"]
+    outputs: ["/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt"
+
+  "<VisionBridge-arm64-apple-macosx26.0-release.a>":
+    tool: phony
+    inputs: ["/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/libVisionBridge.a"]
+    outputs: ["<VisionBridge-arm64-apple-macosx26.0-release.a>"]
+
+  "<VisionBridge-arm64-apple-macosx26.0-release.module>":
+    tool: phony
+    inputs: ["/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/VisionBridge.swift.o","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/Modules/VisionBridge.swiftmodule"]
+    outputs: ["<VisionBridge-arm64-apple-macosx26.0-release.module>"]
+
+  "C.VisionBridge-arm64-apple-macosx26.0-release.a":
+    tool: shell
+    inputs: ["/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/VisionBridge.swift.o","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.product/Objects.LinkFileList"]
+    outputs: ["/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/libVisionBridge.a"]
+    description: "Archiving ./.build/arm64-apple-macosx/release/libVisionBridge.a"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/libtool","-static","-o","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/libVisionBridge.a","@/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.product/Objects.LinkFileList"]
+
+  "C.VisionBridge-arm64-apple-macosx26.0-release.module":
+    tool: shell
+    inputs: ["/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/Sources/VisionBridge/VisionBridge.swift","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/swift-version--1AB21518FC5DEDBE.txt","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/sources"]
+    outputs: ["/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/VisionBridge.swift.o","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/Modules/VisionBridge.swiftmodule"]
+    description: "Compiling Swift Module 'VisionBridge' (1 sources)"
+    args: ["/Library/Developer/CommandLineTools/usr/bin/swiftc","-module-name","VisionBridge","-emit-dependencies","-emit-module","-emit-module-path","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/Modules/VisionBridge.swiftmodule","-output-file-map","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/output-file-map.json","-parse-as-library","-whole-module-optimization","-num-threads","10","-c","@/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/sources","-I","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/Modules","-target","arm64-apple-macosx12.0","-whole-module-optimization","-num-threads","10","-serialize-diagnostics","-O","-j10","-DSWIFT_PACKAGE","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/ModuleCache","-parseable-output","-parse-as-library","-emit-objc-header","-emit-objc-header-path","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/include/VisionBridge-Swift.h","-color-diagnostics","-swift-version","5","-disable-autolinking-runtime-compatibility","-I","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-L","/Library/Developer/CommandLineTools/Library/Developer/Frameworks","-plugin-path","/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing","-sdk","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-g","-Xcc","-isysroot","-Xcc","/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk","-Xcc","-fPIC","-Xcc","-g","-package-name","visionbridge"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/Sources/VisionBridge/","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/Package.swift","/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+

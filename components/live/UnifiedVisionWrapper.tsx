@@ -12,7 +12,7 @@ const CONFIG = {
   // Video capture resolution (internal, not display size)
   video: { width: 640, height: 480, flipped: true },
   // Cell size is fixed, grid dimensions will be calculated from window size
-  cellSize: 2, // pixels per cell
+  cellSize: 4, // pixels per cell (increased from 2 for perf)
   frameRate: 10, // Target frame rafte
   colors: {
     light: "#ffffff",
@@ -28,10 +28,16 @@ export interface VisionSettings {
   gridSize: number;
   seed: string;
   objectDetection: boolean;
+  renderFrameRate: number;
 }
 
 export const UnifiedVisionWrapper = ({
-  settings = { gridSize: 2, seed: "Random", objectDetection: false },
+  settings = {
+    gridSize: 4,
+    seed: "Random",
+    objectDetection: false,
+    renderFrameRate: 60,
+  },
 }: {
   settings?: VisionSettings;
 }) => {
@@ -201,7 +207,7 @@ export const UnifiedVisionWrapper = ({
             this.smoothed.forEach((h: any) => h.framesLost++);
             const usedSmoothed = new Set<any>();
             for (const hand of newDetected) {
-              if (hand.confidence < 0.1) continue;
+              if (hand.confidence < 0.5) continue;
               const wrist = hand.keypoints[0];
               let bestMatch: any = null;
               let minDist = Infinity;
@@ -284,6 +290,43 @@ export const UnifiedVisionWrapper = ({
         let triangles: any[] = [];
         let skeletonConnections: any[] = [];
         let wasPinching = false;
+
+        // Triangle flash: a short-lived record of the triangle shape + apex,
+        // frozen in screen space at the moment cells are created, rendered
+        // independently for TRIANGLE_FLASH_DURATION ms with fading alpha.
+        // The "+N cells" label is drawn attached to the apex via a connector
+        // stem so it reads as one object with the triangle, not a floating
+        // separate label over the Game of Life canvas.
+        let triangleFlashes: any[] = [];
+        const TRIANGLE_FLASH_DURATION = 1000;
+        let handjetFont: any = null; // loaded locally in p.setup() via p.loadFont()
+
+        // Pan physics: two phases.
+        // 1) DRAG phase -- a critically damped spring pulls the rendered pan
+        //    position toward the hand's raw target every frame: snappy,
+        //    attached, zero overshoot while actively grabbing.
+        // 2) THROW phase -- on release, real measured velocity (px/sec,
+        //    sampled from actual hand displacement while dragging) carries
+        //    the pan forward and decays under exponential friction, like a
+        //    native scroll-view fling. This is what makes inertia feel real
+        //    instead of the spring just running out of room to coast.
+        let panTargetX = 0; // where the hand is pulling the grid to (accumulated)
+        let panTargetY = 0;
+        let panVelX = 0; // current pan velocity, px/sec (spring OR throw phase)
+        let panVelY = 0;
+        const SPRING_STIFFNESS = 220; // higher = snappier drag follow
+        const SPRING_DAMPING = 2 * Math.sqrt(SPRING_STIFFNESS); // critical damping during drag
+        const THROW_FRICTION = 0.05; // fraction of velocity retained per second (lower = stops sooner)
+        const THROW_VEL_MIN = 4; // px/sec threshold to end the throw
+        let isThrowing = false;
+        let lastFrameMs = performance.now();
+
+        // Rolling velocity sample, measured from real hand displacement
+        // while dragging (not spring output) -- this is the "how fast was
+        // the hand actually moving" signal used to seed the throw.
+        let sampleVelX = 0;
+        let sampleVelY = 0;
+        const VEL_SAMPLE_SMOOTH = 0.3;
         let effects: any[] = [];
 
         class PinchEffect {
@@ -305,27 +348,13 @@ export const UnifiedVisionWrapper = ({
           }
           draw(p: p5) {
             p.push();
-            // Draw circle
+            // Ring pulse marking the actual cell injection point.
+            // The "+N cells" label lives on the triangle flash instead, so
+            // it stays visually attached to the gesture, not the grid.
             p.noFill();
             p.stroke(255, this.alpha);
             p.strokeWeight(1);
             p.circle(this.x, this.y, p.map(this.alpha, 255, 0, 0, 100));
-
-            // Draw text with background
-            p.textSize(10);
-            const label = `+${this.count} cells`;
-            const tw = p.textWidth(label);
-            const th = 14; // Approx height for textSize 10
-
-            p.rectMode(p.CENTER);
-            p.stroke(0, this.alpha); // Border color (black or adjust if needed, user asked for 1px border)
-            p.fill(255, this.alpha); // White background
-            p.rect(this.x, this.y + this.yOff - 25, tw + 8, th + 4);
-
-            p.textAlign(p.CENTER, p.CENTER);
-            p.noStroke();
-            p.fill(0, this.alpha); // Black text
-            p.text(label, this.x, this.y + this.yOff - 25);
             p.pop();
           }
         }
@@ -347,9 +376,22 @@ export const UnifiedVisionWrapper = ({
         p.setup = async () => {
           p.createCanvas(p.windowWidth, p.windowHeight);
           p.pixelDensity(1);
-          p.frameRate(CONFIG.frameRate);
+          p.frameRate(settingsRef.current.renderFrameRate || 60); // initial value; kept in sync live below
           // Set font for canvas drawing
           p.textFont("IBM Plex Mono, monospace");
+
+          // Load Handjet fully locally from /public/fonts via p.loadFont().
+          // This parses the TTF directly (opentype.js) instead of relying on
+          // CSS font-matching, so there's no serif fallback and no npm
+          // package dependency -- the font ships with the project assets.
+          try {
+            handjetFont = await p.loadFont(
+              "/fonts/Handjet/static/Handjet-Regular.ttf",
+            );
+          } catch (e) {
+            console.warn("Handjet font failed to load locally:", e);
+          }
+
           updateScale();
           updateStepStatus("system", "completed");
 
@@ -433,6 +475,9 @@ export const UnifiedVisionWrapper = ({
                 maxHands: 2,
                 runtime: "mediapipe",
                 modelType: "full",
+                minHandDetectionConfidence: 0.7,
+                minHandPresenceConfidence: 0.5,
+                minTrackingConfidence: 0.5,
               }),
               ml5.faceMesh(videoElt, { maxFaces: 1, flipped: true }),
             ]);
@@ -492,6 +537,13 @@ export const UnifiedVisionWrapper = ({
         }
 
         p.draw = () => {
+          // Keep the render/interaction frame rate in sync with the live
+          // settings panel value (cheap + idempotent to call every frame).
+          const desiredFps = settingsRef.current.renderFrameRate || 60;
+          if (p.frameRate() !== desiredFps) {
+            p.frameRate(desiredFps);
+          }
+
           p.background(CONFIG.colors.dark);
           handTracker.update(rawHands);
           hands = handTracker.smoothed;
@@ -557,7 +609,6 @@ export const UnifiedVisionWrapper = ({
 
           if (video && video.elt && video.elt.readyState >= 2) {
             pg.image(video, 0, 0);
-            pg.loadPixels();
           }
 
           p.push();
@@ -577,6 +628,55 @@ export const UnifiedVisionWrapper = ({
             eff.draw(p);
             if (eff.alpha <= 0) effects.splice(i, 1);
           });
+
+          // Draw triangle flashes: persists for TRIANGLE_FLASH_DURATION ms,
+          // fading out, with the "+N cells" label connected to the apex by
+          // a short stem so it visually follows the triangle's top point.
+          for (let i = triangleFlashes.length - 1; i >= 0; i--) {
+            const tf = triangleFlashes[i];
+            const elapsed = performance.now() - tf.startTime;
+            if (elapsed >= TRIANGLE_FLASH_DURATION) {
+              triangleFlashes.splice(i, 1);
+              continue;
+            }
+
+            const t = elapsed / TRIANGLE_FLASH_DURATION;
+            const alpha = p.map(t, 0, 1, 255, 0);
+
+            p.push();
+            p.noFill();
+            p.stroke(255, alpha);
+            p.strokeWeight(10);
+            p.triangle(tf.a.x, tf.a.y, tf.b.x, tf.b.y, tf.apex.x, tf.apex.y);
+            p.pop();
+
+            // Connector stem from the apex up to the label
+            const labelX = tf.apex.x;
+            const labelY = tf.apex.y - 30;
+
+            p.push();
+            p.stroke(255, alpha);
+            p.strokeWeight(2);
+            p.line(tf.apex.x, tf.apex.y, labelX, labelY + 8);
+            p.pop();
+
+            p.push();
+            p.textFont(handjetFont || "IBM Plex Mono, monospace");
+            p.textSize(32); // 2rem, assuming 16px root font size
+            const label = `+${tf.count} CELLS`.toUpperCase();
+            const tw = p.textWidth(label);
+            const th = 40; // approx height for textSize 32
+
+            p.rectMode(p.CENTER);
+            p.noStroke();
+            p.fill(0, alpha); // black background, no border
+            p.rect(labelX, labelY, tw + 16, th + 8);
+
+            p.textAlign(p.CENTER, p.CENTER);
+            p.fill(255, alpha); // white text
+            p.text(label, labelX, labelY);
+            p.pop();
+          }
 
           if (p.frameCount % 5 === 0 && isMounted) {
             // Stats Calculations
@@ -653,7 +753,7 @@ export const UnifiedVisionWrapper = ({
         };
 
         function drawFaceMesh() {
-          if (!faces.length || !triangles.length || !pg.pixels?.length) return;
+          if (!faces.length || !triangles.length) return;
           const face = faces[0];
           if (!face?.keypoints) return;
           p.push();
@@ -731,33 +831,106 @@ export const UnifiedVisionWrapper = ({
 
           // Determine active navigation hand: one grab at a time
           let anyGrabbing = false;
+
+          const eligibleHands = hands.filter(
+            (h) =>
+              h.confidence > 0.1 &&
+              h.framesLost <= 1 &&
+              h.thumb_tip &&
+              h.index_finger_tip,
+          );
+
+          // Joint-bend angle at the PIP joint (MCP-PIP-TIP). Straight finger ~180deg,
+          // curled finger drops well below that regardless of hand rotation/tilt.
+          const jointAngleDeg = (hand: any, aIdx: number, bIdx: number, cIdx: number) => {
+            const a = hand.keypoints[aIdx];
+            const b = hand.keypoints[bIdx];
+            const c = hand.keypoints[cIdx];
+            const v1x = a.x - b.x, v1y = a.y - b.y;
+            const v2x = c.x - b.x, v2y = c.y - b.y;
+            const mag1 = Math.hypot(v1x, v1y);
+            const mag2 = Math.hypot(v2x, v2y);
+            if (mag1 === 0 || mag2 === 0) return 180;
+            const dot = v1x * v2x + v1y * v2y;
+            const cosA = Math.min(1, Math.max(-1, dot / (mag1 * mag2)));
+            return (Math.acos(cosA) * 180) / Math.PI;
+          };
+
+          // [MCP, PIP, TIP] triplets for index/middle/ring/pinky
+          const FINGER_JOINTS: [number, number, number][] = [
+            [5, 6, 8],
+            [9, 10, 12],
+            [13, 14, 16],
+            [17, 18, 20],
+          ];
+          const CURL_ANGLE_THRESHOLD = 110; // degrees; below this = curled
+
+          const getCurlMetrics = (hand: any) => {
+            let curledCnt = 0;
+            for (const [mcp, pip, tip] of FINGER_JOINTS) {
+              if (jointAngleDeg(hand, mcp, pip, tip) < CURL_ANGLE_THRESHOLD) curledCnt++;
+            }
+            return { curledCnt, extendedCnt: 4 - curledCnt };
+          };
+
+          // Normalize pinch distance by palm size so thresholds hold at any
+          // distance from the camera (wrist-to-middle-MCP as a stable ruler).
+          const getPalmSize = (hand: any) => {
+            const wrist = hand.keypoints[0];
+            const midMcp = hand.keypoints[9];
+            return Math.max(20, p.dist(wrist.x, wrist.y, midMcp.x, midMcp.y));
+          };
+
+          let isTrianglePose = false;
+          if (eligibleHands.length === 2) {
+            const [handA, handB] = eligibleHands;
+            const aThumb = handA.thumb_tip;
+            const aIndex = handA.index_finger_tip;
+            const bThumb = handB.thumb_tip;
+            const bIndex = handB.index_finger_tip;
+
+            const thumbDist = p.dist(aThumb.x, aThumb.y, bThumb.x, bThumb.y);
+            const indexDist = p.dist(aIndex.x, aIndex.y, bIndex.x, bIndex.y);
+            const aPinchDist = p.dist(aThumb.x, aThumb.y, aIndex.x, aIndex.y);
+            const bPinchDist = p.dist(bThumb.x, bThumb.y, bIndex.x, bIndex.y);
+
+            isTrianglePose =
+              thumbDist < 25 &&
+              indexDist < 25 &&
+              aPinchDist < 70 &&
+              bPinchDist < 70;
+          }
+
           for (const h of hands) {
             if (h.confidence <= 0.1 || h.framesLost > 1) {
               (h as any)._isGrab = false;
               continue;
             }
+
             const idxTip = h.index_finger_tip,
               thbTip = h.thumb_tip;
-            let openCnt = 0;
-            const w = h.keypoints[0];
-            for (const [tip, pip] of [
-              [8, 6],
-              [12, 10],
-              [16, 14],
-              [20, 18],
-            ]) {
-              if (
-                p.dist(w.x, w.y, h.keypoints[tip].x, h.keypoints[tip].y) >
-                p.dist(w.x, w.y, h.keypoints[pip].x, h.keypoints[pip].y)
-              )
-                openCnt++;
-            }
+
+            const { curledCnt } = getCurlMetrics(h);
+            const palmSize = getPalmSize(h);
+
             const pinchDist =
               idxTip && thbTip
                 ? p.dist(idxTip.x, idxTip.y, thbTip.x, thbTip.y)
-                : 100;
-            const isGrab =
-              openCnt <= 1 && pinchDist < 60 && h.prev_palm_x !== undefined;
+                : palmSize * 2;
+            const normPinch = pinchDist / palmSize;
+
+            // Hysteresis: separate enter/exit conditions so the state doesn't
+            // flicker when a metric hovers near a single threshold.
+            const prevGrab = (h as any)._isGrab === true;
+            const enterGrab = curledCnt >= 3 && normPinch < 0.55 && !isTrianglePose;
+            const exitGrab = curledCnt < 2 || normPinch > 0.85 || isTrianglePose;
+
+            let nextGrab = prevGrab;
+            if (!prevGrab && enterGrab) nextGrab = true;
+            else if (prevGrab && exitGrab) nextGrab = false;
+
+            const isGrab = nextGrab && h.prev_palm_x !== undefined;
+
             if (isGrab) anyGrabbing = true;
             (h as any)._isGrab = isGrab;
           }
@@ -841,23 +1014,156 @@ export const UnifiedVisionWrapper = ({
               p.pop();
 
               if (grid && isDragging) {
-                grid.setPan(dx * scale, dy * scale);
+                // Accumulate the raw target -- this is where the hand is
+                // "pulling" the grid to, independent of how fast we render.
+                panTargetX += dx * scale;
+                panTargetY += dy * scale;
                 lastGestureName = `hand pan @ ${grid.generation}`;
+
+                // Sample real hand velocity (px/sec) from this frame's raw
+                // displacement, smoothed slightly to reduce tracking jitter.
+                // This is the seed for the throw phase on release -- deliberately
+                // independent of the spring's own internal velocity.
+                const frameDt = Math.max(
+                  (performance.now() - lastFrameMs) / 1000,
+                  1 / 120,
+                );
+                sampleVelX = p.lerp(
+                  sampleVelX,
+                  (dx * scale) / frameDt,
+                  VEL_SAMPLE_SMOOTH,
+                );
+                sampleVelY = p.lerp(
+                  sampleVelY,
+                  (dy * scale) / frameDt,
+                  VEL_SAMPLE_SMOOTH,
+                );
+                isThrowing = false; // actively dragging overrides any throw
               }
             }
           }
 
+          // The moment grab ends (hand released, lost, or no longer active),
+          // hand off the sampled drag velocity to the throw phase exactly once.
+          const isActivelyDragging =
+            activeNavHandId !== null &&
+            hands.some(
+              (h) =>
+                h.id === activeNavHandId &&
+                (h as any)._isGrab &&
+                h.framesLost === 0,
+            );
+
+          if (!isActivelyDragging && !isThrowing && grid) {
+            panVelX = sampleVelX;
+            panVelY = sampleVelY;
+            sampleVelX = 0;
+            sampleVelY = 0;
+            isThrowing = true;
+          }
+
+          // Apply pan physics every frame: spring-follow while dragging,
+          // measured-velocity throw with friction decay after release.
+          if (grid) {
+            const nowMs = performance.now();
+            let dtSec = (nowMs - lastFrameMs) / 1000;
+            lastFrameMs = nowMs;
+            dtSec = Math.min(dtSec, 1 / 30); // clamp to avoid spikes on tab-switch/lag
+
+            if (isActivelyDragging) {
+              // DRAG phase: critically damped spring toward panTarget.
+              const applySpringAxis = (
+                current: number,
+                target: number,
+                vel: number,
+              ): [number, number] => {
+                const displacement = current - target;
+                const accel =
+                  -SPRING_STIFFNESS * displacement - SPRING_DAMPING * vel;
+                const nextVel = vel + accel * dtSec;
+                const nextPos = current + nextVel * dtSec;
+                return [nextPos, nextVel];
+              };
+
+              const [nextPanX, nextVelX] = applySpringAxis(
+                grid.panX,
+                panTargetX,
+                panVelX,
+              );
+              const [nextPanY, nextVelY] = applySpringAxis(
+                grid.panY,
+                panTargetY,
+                panVelY,
+              );
+
+              const stepDx = nextPanX - grid.panX;
+              const stepDy = nextPanY - grid.panY;
+              if (Math.abs(stepDx) > 0.01 || Math.abs(stepDy) > 0.01) {
+                grid.setPan(stepDx, stepDy);
+              }
+              panVelX = nextVelX;
+              panVelY = nextVelY;
+            } else if (isThrowing) {
+              // THROW phase: real velocity decays under exponential friction,
+              // frame-rate independent via THROW_FRICTION^dtSec.
+              const speed = Math.hypot(panVelX, panVelY);
+              if (speed > THROW_VEL_MIN) {
+                const decay = Math.pow(THROW_FRICTION, dtSec);
+                const stepDx = panVelX * dtSec;
+                const stepDy = panVelY * dtSec;
+                grid.setPan(stepDx, stepDy);
+                panVelX *= decay;
+                panVelY *= decay;
+                panTargetX = grid.panX;
+                panTargetY = grid.panY;
+                lastGestureName = `throw @ ${grid.generation}`;
+              } else {
+                panVelX = 0;
+                panVelY = 0;
+                panTargetX = grid.panX;
+                panTargetY = grid.panY;
+                isThrowing = false;
+              }
+            }
+
+          }
+
           // Creating cells with BOTH hands using a triangle gesture:
-          // thumbs together + index fingers together = triangle
-          const gestureHands = hands
-            .filter((h) => h.confidence > 0.1 && h.framesLost <= 1)
-            .slice(0, 2);
+          // thumbs together + index fingers together = triangle.
+          // Both hands must be OPEN (not fists/grabbing) for this to count,
+          // otherwise two closed fists brought close together can falsely
+          // satisfy the thumb/index proximity checks below.
+          //
+          // CRITICAL: must be two DISTINCT physical hands, not just two
+          // tracked entries. The stability tracker can briefly hold a stale
+          // duplicate/ghost entry for a single hand (framesLost <= 1 during
+          // a flicker), and two near-identical overlapping entries can
+          // trivially satisfy the thumb/index proximity checks below,
+          // producing a false one-hand "triangle". Requiring opposite
+          // handedness (Left vs Right) guarantees two real separate hands.
+          const eligibleForTriangle = hands.filter(
+            (h) => h.confidence > 0.1 && h.framesLost <= 1,
+          );
+
+          const leftHand = eligibleForTriangle.find(
+            (h) => h.handedness === "Left",
+          );
+          const rightHand = eligibleForTriangle.find(
+            (h) => h.handedness === "Right",
+          );
+
+          const gestureHands =
+            leftHand && rightHand ? [leftHand, rightHand] : [];
 
           if (gestureHands.length === 2) {
             const handA = gestureHands[0];
             const handB = gestureHands[1];
 
+            const bothHandsOpen =
+              !(handA as any)._isGrab && !(handB as any)._isGrab;
+
             if (
+              bothHandsOpen &&
               handA?.thumb_tip &&
               handA?.index_finger_tip &&
               handB?.thumb_tip &&
@@ -868,13 +1174,21 @@ export const UnifiedVisionWrapper = ({
               const bThumb = handB.thumb_tip;
               const bIndex = handB.index_finger_tip;
 
+              // Extra safeguard: require each hand's OWN thumb-index gap to be
+              // open enough that it isn't itself curled into a fist shape,
+              // even if the grab hysteresis hasn't flagged it yet.
+              const aOwnPinch = p.dist(aThumb.x, aThumb.y, aIndex.x, aIndex.y);
+              const bOwnPinch = p.dist(bThumb.x, bThumb.y, bIndex.x, bIndex.y);
+              const handsNotCurled = aOwnPinch > 30 && bOwnPinch > 30;
+
               // Triangle detection: thumbs touching AND indexes touching (actual contact)
               const thumbDist = p.dist(aThumb.x, aThumb.y, bThumb.x, bThumb.y);
               const indexDist = p.dist(aIndex.x, aIndex.y, bIndex.x, bIndex.y);
 
               const thumbsTouching = thumbDist < 25;
               const indexesTouching = indexDist < 25;
-              const triangleReady = thumbsTouching && indexesTouching;
+              const triangleReady =
+                thumbsTouching && indexesTouching && handsNotCurled;
 
               // Triangle geometry: thumbs form the base, midpoint of indexes is the apex
               const triCenterX =
@@ -882,39 +1196,44 @@ export const UnifiedVisionWrapper = ({
               const triCenterY =
                 (aThumb.y + bThumb.y + (aIndex.y + bIndex.y) / 2) / 3;
 
+              const aWrist = handA.keypoints[0];
+              const bWrist = handB.keypoints[0];
+              const apexX = (aIndex.x + bIndex.x) / 2;
+              const apexY = (aIndex.y + bIndex.y) / 2;
+
+              // Require a much more explicit "open back up" motion before the
+              // next triangle can spawn again. Using BOTH distances avoids
+              // re-arming from a tiny wobble in just one fingertip pair.
+              const TRIANGLE_REARM_DIST = 120;
+              const triangleReleased =
+                thumbDist > TRIANGLE_REARM_DIST &&
+                indexDist > TRIANGLE_REARM_DIST;
+
               if (triangleReady) {
-                const aWrist = handA.keypoints[0];
-                const bWrist = handB.keypoints[0];
-                const apexX = (aIndex.x + bIndex.x) / 2;
-                const apexY = (aIndex.y + bIndex.y) / 2;
-
-                p.push();
-                p.noFill();
-                p.stroke(255, 255, 255, 255);
-                p.strokeWeight(10);
-                p.triangle(
-                  aWrist.x,
-                  aWrist.y,
-                  bWrist.x,
-                  bWrist.y,
-                  apexX,
-                  apexY,
-                );
-                p.pop();
-
                 // Spawn cells at the triangle center (single burst per gesture)
                 if (!wasPinching) {
                   const screenX = offsetX + triCenterX * scale;
                   const screenY = offsetY + triCenterY * scale;
 
                   const birthed = grid.explodeAt(screenX, screenY);
+
+                  // Freeze the triangle's vertices + apex in screen space so
+                  // the flash renders correctly even after hands move/release.
+                  triangleFlashes.push({
+                    a: { x: offsetX + aWrist.x * scale, y: offsetY + aWrist.y * scale },
+                    b: { x: offsetX + bWrist.x * scale, y: offsetY + bWrist.y * scale },
+                    apex: { x: offsetX + apexX * scale, y: offsetY + apexY * scale },
+                    count: birthed,
+                    startTime: performance.now(),
+                  });
+
                   effects.push(new PinchEffect(screenX, screenY, birthed));
 
                   wasPinching = true;
                   injectionCount++;
                   lastGestureName = `triangle spawn @ ${grid.generation}`;
                 }
-              } else if (thumbDist > 80 || indexDist > 80) {
+              } else if (triangleReleased) {
                 wasPinching = false;
               }
             } else {
@@ -973,10 +1292,25 @@ export const UnifiedVisionWrapper = ({
       };
       if (containerRef.current && !p5Ref.current)
         p5Ref.current = new P5(sketch, containerRef.current);
+
+      const handleVisibility = () => {
+        if (!p5Ref.current) return;
+        if (document.hidden) {
+          p5Ref.current.noLoop();
+        } else {
+          p5Ref.current.loop();
+        }
+      };
+      document.addEventListener("visibilitychange", handleVisibility);
+      (window as any).__visHandler = handleVisibility;
     }
 
     return () => {
       isMounted = false;
+      if ((window as any).__visHandler) {
+        document.removeEventListener("visibilitychange", (window as any).__visHandler);
+        (window as any).__visHandler = null;
+      }
       if (typeof checkMl5 !== "undefined") clearInterval(checkMl5);
       if (p5Ref.current) {
         p5Ref.current.remove();

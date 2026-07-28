@@ -7,9 +7,10 @@ import { UnifiedVisionWrapper } from "../components/live/UnifiedVisionWrapper";
 export default function VisionPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState({
-    gridSize: 2,
+    gridSize: 4,
     seed: "Random",
     objectDetection: false,
+    renderFrameRate: 24,
   });
 
   return (

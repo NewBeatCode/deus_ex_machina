@@ -7,8 +7,14 @@ interface SettingsModalProps {
     gridSize: number;
     seed: string;
     objectDetection: boolean;
+    renderFrameRate: number;
   };
-  onUpdate: (newSettings: { gridSize: number; seed: string; objectDetection: boolean }) => void;
+  onUpdate: (newSettings: {
+    gridSize: number;
+    seed: string;
+    objectDetection: boolean;
+    renderFrameRate: number;
+  }) => void;
 }
 
 export const SettingsModal: FC<SettingsModalProps> = ({ isOpen, onClose, settings, onUpdate }) => {
@@ -16,6 +22,7 @@ export const SettingsModal: FC<SettingsModalProps> = ({ isOpen, onClose, setting
 
   const GRID_SIZES = [2, 4, 6, 8];
   const SEEDS = ["Random", "Gosper glider gun", "R-pentomino"];
+  const FRAME_RATES = [15, 24, 30, 45, 60];
 
   return (
     <div className="fixed inset-0 z-200 flex items-center justify-center backdrop-blur-xs" onClick={onClose}>
@@ -94,6 +101,32 @@ export const SettingsModal: FC<SettingsModalProps> = ({ isOpen, onClose, setting
           <p className="text-[10px] text-white/30 font-mono">Detects common objects (person, phone, cup, etc.)</p>
         </div>
         
+        {/* Render Frame Rate */}
+        <div className="space-y-3">
+          <label className="text-xs text-white/50 uppercase tracking-wider font-mono">
+            Frame Rate (fps)
+          </label>
+          <div className="flex gap-2">
+            {FRAME_RATES.map((fps) => (
+              <button
+                key={fps}
+                onClick={() => onUpdate({ ...settings, renderFrameRate: fps })}
+                className={`flex-1 py-2 text-sm rounded font-mono transition-all ${
+                  settings.renderFrameRate === fps
+                    ? "bg-white text-black font-bold"
+                    : "bg-white/5 text-white/70 hover:bg-white/10"
+                }`}
+              >
+                {fps}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-white/30 font-mono">
+            Lower this if hand tracking feels laggy or the fan spins up. 60 is
+            smoothest, 15-24 is lightest on the CPU/GPU.
+          </p>
+        </div>
+
         <div className="pt-2 text-[10px] text-white/30 text-center font-mono">
           Changes apply immediately on selection
         </div>

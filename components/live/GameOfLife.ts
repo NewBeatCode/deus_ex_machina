@@ -160,14 +160,13 @@ export class Grid {
     const maxY = minY + Math.ceil(this.p.height / cs) + 1;
     
     this.graphics.noStroke();
+    this.graphics.fill(this.config.colors.light as any);
     
     for (const key of this.alive) {
       const x = getX(key);
       const y = getY(key);
       
       if (x >= minX && x <= maxX && y >= minY && y <= maxY) {
-        this.graphics.fill(this.config.colors.light as any);
-        
         const screenX = x * cs + this.panX;
         const screenY = y * cs + this.panY;
         this.graphics.rect(screenX, screenY, cs, cs);

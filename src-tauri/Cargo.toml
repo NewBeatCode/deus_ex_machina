@@ -23,3 +23,17 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
+
+# Native Apple Silicon bridge: links against a Swift static lib (VisionBridge)
+# that wraps Vision/CoreML requests dispatched to the Apple Neural Engine.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+objc2-foundation = "0.2"
+sysinfo = "0.32"
+
+# NOTE: `ort` is currently an unused dependency — no Rust code creates an
+# ONNX session. ML inference (face/hand/body tracking) runs client-side via
+# ml5.js/TensorFlow.js inside the WebView, which cannot reach these Rust
+# feature flags or the Apple Neural Engine directly.
+[features]
+default = []

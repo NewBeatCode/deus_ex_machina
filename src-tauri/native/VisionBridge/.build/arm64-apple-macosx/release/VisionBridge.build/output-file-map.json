@@ -1,0 +1,13 @@
+{
+  "": {
+    "dependencies": "/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/VisionBridge.d",
+    "object": "/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/VisionBridge.o",
+    "swift-dependencies": "/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/master.swiftdeps"
+  },
+  "/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/Sources/VisionBridge/VisionBridge.swift": {
+    "object": "/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/VisionBridge.swift.o",
+    "swiftmodule": "/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/VisionBridge~partial.swiftmodule",
+    "swift-dependencies": "/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/VisionBridge.swiftdeps",
+    "diagnostics": "/Users/angelkaragiozov/00_NextJS-PROJECTS/deus_ex_machina/src-tauri/native/VisionBridge/.build/arm64-apple-macosx/release/VisionBridge.build/VisionBridge.dia"
+  }
+}
