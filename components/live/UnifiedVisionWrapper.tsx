@@ -298,8 +298,11 @@ export const UnifiedVisionWrapper = ({
         // stem so it reads as one object with the triangle, not a floating
         // separate label over the Game of Life canvas.
         let triangleFlashes: any[] = [];
-        const TRIANGLE_FLASH_DURATION = 1000;
+        const TRIANGLE_FLASH_DURATION = 1500; // 1000ms hold + 500ms fade
+        const TRIANGLE_HOLD_DURATION = 1000;
+        const TRIANGLE_FADE_DURATION = 500;
         let handjetFont: any = null; // loaded locally in p.setup() via p.loadFont()
+        let cellsIconImg: any = null; // "+N cells" icon, loaded in p.setup()
 
         // Pan physics: two phases.
         // 1) DRAG phase -- a critically damped spring pulls the rendered pan
@@ -386,11 +389,27 @@ export const UnifiedVisionWrapper = ({
           // package dependency -- the font ships with the project assets.
           try {
             handjetFont = await p.loadFont(
-              "/fonts/Handjet/static/Handjet-Regular.ttf",
+              "/fonts/Handjet/static/Handjet-Thin.ttf",
             );
           } catch (e) {
             console.warn("Handjet font failed to load locally:", e);
           }
+
+            // Draw requested SVG vector path via Path2D onto canvas context
+            const cellsSvgPath = new Path2D(
+              "M18 23H10V21H12V19H14V21H16V17H18V23ZM10 15H12V19H10V17H6V15H8V13H4V11H10V15ZM20 17H18V15H20V17ZM14 15H12V13H14V15ZM22 15H20V13H18V11H20V7H22V15ZM4 7H8V9H4V11H2V3H4V7ZM18 11H16V9H18V11ZM16 9H14V3H16V9ZM12 7H10V5H12V7ZM14 3H4V1H14V3Z",
+            );
+            const drawCellsIcon = (x: number, y: number, sz: number, a: number) => {
+              const ctx = (p as any).drawingContext as CanvasRenderingContext2D;
+              if (!ctx) return;
+              ctx.save();
+              ctx.translate(x - sz / 2, y - sz / 2);
+              ctx.scale(sz / 24, sz / 24);
+              ctx.fillStyle = `rgba(255, 255, 255, ${a / 255})`;
+              ctx.fill(cellsSvgPath);
+              ctx.restore();
+            };
+            (p as any)._drawCellsIcon = drawCellsIcon;
 
           updateScale();
           updateStepStatus("system", "completed");
@@ -640,8 +659,13 @@ export const UnifiedVisionWrapper = ({
               continue;
             }
 
-            const t = elapsed / TRIANGLE_FLASH_DURATION;
-            const alpha = p.map(t, 0, 1, 255, 0);
+            let alpha;
+            if (elapsed < TRIANGLE_HOLD_DURATION) {
+              alpha = 255;
+            } else {
+              const t = (elapsed - TRIANGLE_HOLD_DURATION) / TRIANGLE_FADE_DURATION;
+              alpha = p.map(t, 0, 1, 255, 0);
+            }
 
             p.push();
             p.noFill();
@@ -662,19 +686,28 @@ export const UnifiedVisionWrapper = ({
 
             p.push();
             p.textFont(handjetFont || "IBM Plex Mono, monospace");
-            p.textSize(32); // 2rem, assuming 16px root font size
+            p.textSize(80); // Label Text size
             const label = `+${tf.count} CELLS`.toUpperCase();
             const tw = p.textWidth(label);
-            const th = 40; // approx height for textSize 32
+            const th = 120; // approx height for textSize 32
+            const iconSize = 28; // icon square size
+            const iconGap = 12; // spacing between text and icon
+            const totalW = tw + iconGap + iconSize;
 
             p.rectMode(p.CENTER);
             p.noStroke();
             p.fill(0, alpha); // black background, no border
-            p.rect(labelX, labelY, tw + 16, th + 8);
+            p.rect(labelX, labelY, totalW + 16, th + 8);
 
             p.textAlign(p.CENTER, p.CENTER);
             p.fill(255, alpha); // white text
-            p.text(label, labelX, labelY);
+            const textX = labelX - iconSize / 2 - iconGap / 2;
+            p.text(label, textX, labelY);
+
+            const iconX = textX + tw / 2 + iconGap + iconSize / 2;
+            if ((p as any)._drawCellsIcon) {
+              (p as any)._drawCellsIcon(iconX, labelY, iconSize, alpha);
+            }
             p.pop();
           }
 
