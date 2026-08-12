@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type p5 from "p5";
 import { TerminalLoader, type LoadingStep } from "./TerminalLoader";
 import { Grid } from "./GameOfLife";
@@ -49,6 +49,15 @@ export const UnifiedVisionWrapper = ({
   const settingsRef = useRef(settings);
   // Trigger grid rebuild/reset if needed
   const needsResetRef = useRef(false);
+
+  // ML detection pause/resume
+  const [mlPaused, setMlPaused] = useState(false);
+  const mlPausedRef = useRef(false);
+  // Exposed by the p5 sketch so React can call stop/start on the models
+  const mlControlRef = useRef<{
+    pause: () => void;
+    resume: () => void;
+  } | null>(null);
 
   useEffect(() => {
     if (JSON.stringify(settingsRef.current) !== JSON.stringify(settings)) {
@@ -170,7 +179,6 @@ export const UnifiedVisionWrapper = ({
       const sketch = (p: p5) => {
         // Shared state
         let video: any;
-        let pg: any;
         let grid: Grid;
 
         // ML models
@@ -331,6 +339,8 @@ export const UnifiedVisionWrapper = ({
         let sampleVelY = 0;
         const VEL_SAMPLE_SMOOTH = 0.3;
         let effects: any[] = [];
+        // Track last-set FPS so we avoid calling the p.frameRate() getter every frame.
+        let lastSetFps = settingsRef.current.renderFrameRate || 60;
 
         class PinchEffect {
           x: number;
@@ -377,7 +387,18 @@ export const UnifiedVisionWrapper = ({
         }
 
         p.setup = async () => {
-          p.createCanvas(p.windowWidth, p.windowHeight);
+          const canvas = p.createCanvas(p.windowWidth, p.windowHeight);
+          const canvasElt = canvas.elt as HTMLElement;
+          canvasElt.addEventListener("contextmenu", (e: MouseEvent) => {
+            e.preventDefault();
+            if (grid) {
+              const rect = canvasElt.getBoundingClientRect();
+              const x = e.clientX - rect.left;
+              const y = e.clientY - rect.top;
+              const count = grid.spawnGliderGunAt(x, y);
+              effects.push(new PinchEffect(x, y, count));
+            }
+          });
           p.pixelDensity(1);
           p.frameRate(settingsRef.current.renderFrameRate || 60); // initial value; kept in sync live below
           // Set font for canvas drawing
@@ -395,21 +416,36 @@ export const UnifiedVisionWrapper = ({
             console.warn("Handjet font failed to load locally:", e);
           }
 
-            // Draw requested SVG vector path via Path2D onto canvas context
-            const cellsSvgPath = new Path2D(
+            // Pool of "+N cells" icons, drawn via Path2D onto canvas context.
+            // One is picked at random per triangle flash (see
+            // triangleFlashes.push) and stays fixed for that flash's life.
+            const cellsSvgPaths = [
+              "M14 22H10V20H14V22ZM10 20H8V18H10V20ZM16 20H14V18H16V20ZM8 18H6V16H8V18ZM18 18H16V16H18V18ZM13 17H11V15H13V17ZM6 16H4V14H6V16ZM20 16H18V14H20V16ZM4 14H2V6H4V14ZM22 14H20V6H22V14ZM10 10H11V13H8V12H6V8H10V10ZM18 12H16V13H13V10H14V8H18V12ZM6 6H4V4H6V6ZM20 6H18V4H20V6ZM18 4H6V2H18V4Z",
+              "M18 22H6v-2h12v2ZM6 20H4v-2h2v2Zm14 0h-2v-2h2v2ZM4 18H2V6h2v12Zm18 0h-2V6h2v12Zm-7-1H9v-2h6v2Zm-6-2H7v-2h2v2Zm8 0h-2v-2h2v2Zm-7-5H8V8h2v2Zm6 0h-2V8h2v2ZM6 6H4V4h2v2Zm14 0h-2V4h2v2Zm-2-2H6V2h12v2Z",
+              "M2 5h2v4H2zm20 0h-2v4h2zM4 9h2v2H4zm16 0h-2v2h2zM2 13h4v2H2zm20 0h-4v2h4zM4 17h2v2H4zm16 0h-2v2h2zM2 19h2v2H2zm20 0h-2v2h2zM6 11h12v2H6zM6 7h2v12H6zm10 0h2v12h-2zM8 19h8v2H8zM8 5h8v2H8zM11 15h2v6h-2zM8 1h2v6H8zm6 0h2v6h-2z",
               "M18 23H10V21H12V19H14V21H16V17H18V23ZM10 15H12V19H10V17H6V15H8V13H4V11H10V15ZM20 17H18V15H20V17ZM14 15H12V13H14V15ZM22 15H20V13H18V11H20V7H22V15ZM4 7H8V9H4V11H2V3H4V7ZM18 11H16V9H18V11ZM16 9H14V3H16V9ZM12 7H10V5H12V7ZM14 3H4V1H14V3Z",
-            );
-            const drawCellsIcon = (x: number, y: number, sz: number, a: number) => {
+              "M17 9h-2v13h-2v-6h-2v6H9V9H7V7h10v2Zm-6 5h2V9h-2v5ZM7 7H5V5h2v2Zm12 0h-2V5h2v2Zm-5-1h-4V2h4v4ZM5 5H3V3h2v2Zm16 0h-2V3h2v2Z",
+            ];
+            const cellsSvgPathPool = cellsSvgPaths.map((d) => new Path2D(d));
+            const drawCellsIcon = (
+              iconIndex: number,
+              x: number,
+              y: number,
+              sz: number,
+              a: number,
+            ) => {
               const ctx = (p as any).drawingContext as CanvasRenderingContext2D;
               if (!ctx) return;
+              const iconPath = cellsSvgPathPool[iconIndex] || cellsSvgPathPool[0];
               ctx.save();
               ctx.translate(x - sz / 2, y - sz / 2);
               ctx.scale(sz / 24, sz / 24);
               ctx.fillStyle = `rgba(255, 255, 255, ${a / 255})`;
-              ctx.fill(cellsSvgPath);
+              ctx.fill(iconPath);
               ctx.restore();
             };
             (p as any)._drawCellsIcon = drawCellsIcon;
+            (p as any)._cellsIconPoolSize = cellsSvgPathPool.length;
 
           updateScale();
           updateStepStatus("system", "completed");
@@ -424,16 +460,16 @@ export const UnifiedVisionWrapper = ({
             console.error("Video capture failed:", e);
           }
 
-          pg = p.createGraphics(CONFIG.video.width, CONFIG.video.height);
-          pg.pixelDensity(1);
-          (pg.elt as HTMLCanvasElement).getContext("2d", {
-            willReadFrequently: true,
-          });
+          // No offscreen pg buffer needed — video frames are fed directly to
+          // the ML models via video.elt; we never readback pixels ourselves.
 
           updateStepStatus("gameoflife", "loading");
           setTimeout(() => {
-            grid = new Grid(p, p.windowWidth, p.windowHeight, CONFIG);
-            grid.explodeAt(p.windowWidth / 2, p.windowHeight / 2);
+            grid = new Grid(p, p.windowWidth, p.windowHeight, {
+              ...CONFIG,
+              cellSize: settingsRef.current.gridSize,
+            });
+            grid.spawnPattern(settingsRef.current.seed);
             updateStepStatus("gameoflife", "completed");
           }, 100);
 
@@ -455,8 +491,11 @@ export const UnifiedVisionWrapper = ({
         p.windowResized = () => {
           p.resizeCanvas(p.windowWidth, p.windowHeight);
           updateScale();
-          grid = new Grid(p, p.windowWidth, p.windowHeight, CONFIG);
-          grid.explodeAt(p.windowWidth / 2, p.windowHeight / 2);
+          grid = new Grid(p, p.windowWidth, p.windowHeight, {
+            ...CONFIG,
+            cellSize: settingsRef.current.gridSize,
+          });
+          grid.spawnPattern(settingsRef.current.seed);
         };
 
         async function initModels() {
@@ -508,19 +547,30 @@ export const UnifiedVisionWrapper = ({
             updateStepStatus("movenet", "completed");
 
             handPose = hp;
-            startDetection(handPose, (r: any[]) => {
-              rawHands = r;
-              console.log(
-                "[handpose-callback] rawHands.length:",
-                r?.length ?? "undefined",
-              );
-            });
+            startDetection(handPose, (r: any[]) => (rawHands = r));
             updateStepStatus("handpose", "completed");
 
             faceMesh = fm;
             triangles = extractTriangles(faceMesh);
             startDetection(faceMesh, (r: any[]) => (faces = r));
             updateStepStatus("facemesh", "completed");
+
+            // Expose pause/resume controls to the React layer
+            mlControlRef.current = {
+              pause: () => {
+                try { faceMesh?.detectStop?.(); } catch (_) {}
+                try { bodyPose?.detectStop?.(); } catch (_) {}
+                try { handPose?.detectStop?.(); } catch (_) {}
+                faces = []; poses = []; rawHands = [];
+              },
+              resume: () => {
+                if (video?.elt?.readyState >= 2) {
+                  try { faceMesh?.detectStart?.(video.elt, (r: any[]) => (faces = r)); } catch (_) {}
+                  try { bodyPose?.detectStart?.(video.elt, (r: any[]) => (poses = r)); } catch (_) {}
+                  try { handPose?.detectStart?.(video.elt, (r: any[]) => (rawHands = r)); } catch (_) {}
+                }
+              },
+            };
           } catch (err) {
             console.error("Error loading ML models:", err);
           }
@@ -558,9 +608,12 @@ export const UnifiedVisionWrapper = ({
         p.draw = () => {
           // Keep the render/interaction frame rate in sync with the live
           // settings panel value (cheap + idempotent to call every frame).
+          // Avoid calling the p.frameRate() getter (which computes a rolling
+          // average) on every frame. Only push a new value when it actually changed.
           const desiredFps = settingsRef.current.renderFrameRate || 60;
-          if (p.frameRate() !== desiredFps) {
+          if (desiredFps !== lastSetFps) {
             p.frameRate(desiredFps);
+            lastSetFps = desiredFps;
           }
 
           p.background(CONFIG.colors.dark);
@@ -570,20 +623,14 @@ export const UnifiedVisionWrapper = ({
           // Check for settings updates
           if (needsResetRef.current) {
             const s = settingsRef.current;
-            // Recreate grid if size changed or just reset if seed changed
-            // For simplicity, we just recreate to handle size changes easily
-            if (grid.cellSize !== s.gridSize) {
+            // Recreate grid if size changed or grid not initialized yet
+            if (!grid || grid.cellSize !== s.gridSize) {
               grid = new Grid(p, p.windowWidth, p.windowHeight, {
                 ...CONFIG,
                 cellSize: s.gridSize,
               });
             }
-            if (s.seed !== "Random" && s.seed !== stats.simulation.seed) {
-              grid.spawnPattern(s.seed);
-            } else if (s.seed === "Random" && needsResetRef.current) {
-              // If explicitly requested reset on random, explode again
-              grid.explodeAt(p.width / 2, p.height / 2);
-            }
+            grid.spawnPattern(s.seed);
 
             // Dynamic COCO-SSD Loading
             if (
@@ -626,9 +673,7 @@ export const UnifiedVisionWrapper = ({
             grid.draw();
           }
 
-          if (video && video.elt && video.elt.readyState >= 2) {
-            pg.image(video, 0, 0);
-          }
+          // (pg buffer removed — ML models consume video.elt directly)
 
           p.push();
           p.translate(offsetX, offsetY);
@@ -676,7 +721,7 @@ export const UnifiedVisionWrapper = ({
 
             // Connector stem from the apex up to the label
             const labelX = tf.apex.x;
-            const labelY = tf.apex.y - 30;
+            const labelY = tf.apex.y - 70;
 
             p.push();
             p.stroke(255, alpha);
@@ -706,12 +751,13 @@ export const UnifiedVisionWrapper = ({
 
             const iconX = textX + tw / 2 + iconGap + iconSize / 2;
             if ((p as any)._drawCellsIcon) {
-              (p as any)._drawCellsIcon(iconX, labelY, iconSize, alpha);
+              (p as any)._drawCellsIcon(tf.iconIndex || 0, iconX, labelY, iconSize, alpha);
             }
             p.pop();
           }
 
-          if (p.frameCount % 5 === 0 && isMounted) {
+          // Stats HUD only needs ~2 updates/sec — no need for 12×/sec React re-renders.
+          if (p.frameCount % 30 === 0 && isMounted) {
             // Stats Calculations
             const uptime = ((Date.now() - startTimeRef.current) / 1000).toFixed(
               1,
@@ -800,7 +846,7 @@ export const UnifiedVisionWrapper = ({
             if (!ptA || !ptB || !ptC) continue;
             const cx = Math.floor((ptA.x + ptB.x + ptC.x) / 3),
               cy = Math.floor((ptA.y + ptB.y + ptC.y) / 3);
-            if (cx >= 0 && cx < pg.width && cy >= 0 && cy < pg.height) {
+            if (cx >= 0 && cx < CONFIG.video.width && cy >= 0 && cy < CONFIG.video.height) {
               p.fill(0);
               p.stroke(255);
               p.strokeWeight(0.5);
@@ -1042,9 +1088,42 @@ export const UnifiedVisionWrapper = ({
               p.rectMode(p.CENTER);
               p.noFill();
               p.stroke(255);
-              p.strokeWeight(5);
+              p.strokeWeight(2);
               p.square(cx, cy, sqSize);
               p.pop();
+
+              // Directional chevrons on all 4 sides of the square
+              const ctx = (p as any).drawingContext as CanvasRenderingContext2D;
+              if (ctx) {
+                const chevronPath =
+                  (p as any)._chevronPath ||
+                  new Path2D("M9 17h2v-2h2v-2h2v-2h-2V9h-2V7H9v10Z");
+                if (!(p as any)._chevronPath) (p as any)._chevronPath = chevronPath;
+
+                const halfSq = sqSize / 2;
+                const chevronSize = 16;
+                const gap = 12;
+
+                const directions = [
+                  { x: cx + halfSq + gap, y: cy, angle: 0 },
+                  { x: cx, y: cy + halfSq + gap, angle: Math.PI / 2 },
+                  { x: cx - halfSq - gap, y: cy, angle: Math.PI },
+                  { x: cx, y: cy - halfSq - gap, angle: -Math.PI / 2 },
+                ];
+
+                ctx.save();
+                ctx.fillStyle = "#ffffff";
+                for (const d of directions) {
+                  ctx.save();
+                  ctx.translate(d.x, d.y);
+                  ctx.rotate(d.angle);
+                  ctx.scale(chevronSize / 24, chevronSize / 24);
+                  ctx.translate(-12, -12);
+                  ctx.fill(chevronPath);
+                  ctx.restore();
+                }
+                ctx.restore();
+              }
 
               if (grid && isDragging) {
                 // Accumulate the raw target -- this is where the hand is
@@ -1258,6 +1337,9 @@ export const UnifiedVisionWrapper = ({
                     apex: { x: offsetX + apexX * scale, y: offsetY + apexY * scale },
                     count: birthed,
                     startTime: performance.now(),
+                    iconIndex: Math.floor(
+                      Math.random() * ((p as any)._cellsIconPoolSize || 1),
+                    ),
                   });
 
                   effects.push(new PinchEffect(screenX, screenY, birthed));
@@ -1357,6 +1439,23 @@ export const UnifiedVisionWrapper = ({
     };
   }, []);
 
+  const handleMlToggle = useCallback(() => {
+    const next = !mlPausedRef.current;
+    mlPausedRef.current = next;
+    setMlPaused(next);
+    if (next) {
+      // Relaxed mode: stop all ML inference AND drop render FPS to 15.
+      // The GoL simulation keeps running (via its own 10 Hz internal throttle)
+      // but the render loop does ~75% less GPU work.
+      mlControlRef.current?.pause();
+      p5Ref.current?.frameRate(15);
+    } else {
+      // Full mode: resume ML and restore the configured render frame rate.
+      mlControlRef.current?.resume();
+      p5Ref.current?.frameRate(settingsRef.current.renderFrameRate || 60);
+    }
+  }, []);
+
   return (
     <>
       <TerminalLoader
@@ -1369,6 +1468,50 @@ export const UnifiedVisionWrapper = ({
       <div ref={containerRef} className="fixed inset-0" />
 
       {cameraError && <CameraErrorDialog error={cameraError} />}
+
+      {/* ML Detection Pause/Resume button — bottom-left corner */}
+      <button
+        id="ml-detection-toggle"
+        onClick={handleMlToggle}
+        style={{
+          position: "fixed",
+          bottom: "24px",
+          left: "24px",
+          zIndex: 9999,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "4px",
+          background: "transparent",
+          border: "none",
+          outline: "none",
+          cursor: "pointer",
+          color: "#ffffff",
+          opacity: 0.5,
+          transition: "opacity 0.2s ease",
+          userSelect: "none",
+        }}
+        onMouseEnter={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.opacity = "0.8";
+        }}
+        onMouseLeave={(e) => {
+          (e.currentTarget as HTMLButtonElement).style.opacity = "0.5";
+        }}
+      >
+        {/* Icon */}
+        {mlPaused ? (
+          // Play triangle
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="5,3 19,12 5,21" />
+          </svg>
+        ) : (
+          // Pause bars
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="4" width="4" height="16" rx="1" />
+            <rect x="14" y="4" width="4" height="16" rx="1" />
+          </svg>
+        )}
+      </button>
     </>
   );
 };

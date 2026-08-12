@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { SettingsModal } from "../components/live/SettingsModal";
-import { UnifiedVisionWrapper } from "../components/live/UnifiedVisionWrapper";
+import { SettingsModal } from "../components/SettingsModal";
+import { UnifiedVisionWrapper } from "../components/UnifiedVisionWrapper";
 
 export default function VisionPage() {
   const [showSettings, setShowSettings] = useState(false);
