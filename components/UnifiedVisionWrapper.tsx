@@ -310,7 +310,6 @@ export const UnifiedVisionWrapper = ({
         const TRIANGLE_HOLD_DURATION = 1000;
         const TRIANGLE_FADE_DURATION = 500;
         let handjetFont: any = null; // loaded locally in p.setup() via p.loadFont()
-        let cellsIconImg: any = null; // "+N cells" icon, loaded in p.setup()
 
         // Pan physics: two phases.
         // 1) DRAG phase -- a critically damped spring pulls the rendered pan

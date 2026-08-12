@@ -1,4 +1,5 @@
 import { type FC } from "react";
+import { getAllPresetCategories } from "./presets/index";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -21,8 +22,8 @@ export const SettingsModal: FC<SettingsModalProps> = ({ isOpen, onClose, setting
   if (!isOpen) return null;
 
   const GRID_SIZES = [2, 4, 6, 8];
-  const SEEDS = ["Random", "Gosper glider gun", "R-pentomino"];
   const FRAME_RATES = [15, 24, 30, 45, 60];
+  const presetCategories = getAllPresetCategories();
 
   return (
     <div className="fixed inset-0 z-200 flex items-center justify-center backdrop-blur-xs" onClick={onClose}>
@@ -32,7 +33,7 @@ export const SettingsModal: FC<SettingsModalProps> = ({ isOpen, onClose, setting
       >
         <div className="flex justify-between items-center">
           <h2 className="text-white text-lg font-medium tracking-wide">Settings</h2>
-          <button onClick={onClose} className="text-white/50 hover:text-white transition-colors">
+          <button onClick={onClose} className="text-white/50 hover:text-white transition-colors cursor-pointer">
             ✕
           </button>
         </div>
@@ -45,7 +46,7 @@ export const SettingsModal: FC<SettingsModalProps> = ({ isOpen, onClose, setting
               <button
                 key={size}
                 onClick={() => onUpdate({ ...settings, gridSize: size })}
-                className={`flex-1 py-2 text-sm rounded font-mono transition-all ${
+                className={`flex-1 py-2 text-sm rounded font-mono transition-all cursor-pointer ${
                   settings.gridSize === size
                     ? "bg-white text-black font-bold"
                     : "bg-white/5 text-white/70 hover:bg-white/10"
@@ -57,25 +58,40 @@ export const SettingsModal: FC<SettingsModalProps> = ({ isOpen, onClose, setting
           </div>
         </div>
 
-        {/* Seed Pattern */}
-        <div className="space-y-3">
-          <label className="text-xs text-white/50 uppercase tracking-wider font-mono">Initial Seed</label>
-          <div className="grid grid-cols-1 gap-2">
-            {SEEDS.map((seed) => (
-              <button
-                key={seed}
-                 onClick={() => onUpdate({ ...settings, seed })}
-                className={`w-full py-2 px-3 text-left text-sm rounded transition-all flex items-center justify-between group ${
-                  settings.seed === seed
-                    ? "bg-white text-black font-bold"
-                    : "bg-white/5 text-white/70 hover:bg-white/10"
-                }`}
-              >
-                {seed}
-                {settings.seed === seed && <span className="text-[10px] opacity-100">●</span>}
-              </button>
-            ))}
+        {/* Seed Preset Dropdown */}
+        <div className="space-y-2">
+          <label className="text-xs text-white/50 uppercase tracking-wider font-mono flex justify-between items-center">
+            <span>Pattern Preset</span>
+            <span className="text-[10px] text-white/40 lowercase">({settings.seed})</span>
+          </label>
+          <div className="relative">
+            <select
+              value={settings.seed}
+              onChange={(e) => onUpdate({ ...settings, seed: e.target.value })}
+              className="w-full py-2.5 px-3 pr-8 bg-[#242424] border border-white/15 rounded-lg text-sm text-white font-mono appearance-none focus:outline-none focus:border-white/50 focus:ring-1 focus:ring-white/30 transition-all cursor-pointer"
+            >
+              <option value="Random" className="bg-[#1a1a1a] text-white py-1">
+                Random
+              </option>
+              {presetCategories.map((group) => (
+                <optgroup key={group.category} label={group.category} className="bg-[#1a1a1a] text-white/60 font-semibold">
+                  {group.names.map((name) => (
+                    <option key={name} value={name} className="bg-[#242424] text-white py-1 font-mono font-normal">
+                      {name}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-white/50">
+              <svg className="w-4 h-4 fill-current" viewBox="0 0 20 20">
+                <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
+              </svg>
+            </div>
           </div>
+          <p className="text-[10px] text-white/30 font-mono">
+            Select an initial Game of Life preset pattern from the library
+          </p>
         </div>
 
         {/* Object Detection Toggle */}
@@ -83,7 +99,7 @@ export const SettingsModal: FC<SettingsModalProps> = ({ isOpen, onClose, setting
           <label className="text-xs text-white/50 uppercase tracking-wider font-mono">Object Detection (COCO-SSD)</label>
           <button
             onClick={() => onUpdate({ ...settings, objectDetection: !settings.objectDetection })}
-            className={`w-full py-2 px-3 text-sm rounded transition-all flex items-center justify-between ${
+            className={`w-full py-2 px-3 text-sm rounded transition-all flex items-center justify-between cursor-pointer ${
               settings.objectDetection
                 ? "bg-white/10 text-white border border-white/20"
                 : "bg-white/5 text-white/50 hover:bg-white/10"
@@ -111,7 +127,7 @@ export const SettingsModal: FC<SettingsModalProps> = ({ isOpen, onClose, setting
               <button
                 key={fps}
                 onClick={() => onUpdate({ ...settings, renderFrameRate: fps })}
-                className={`flex-1 py-2 text-sm rounded font-mono transition-all ${
+                className={`flex-1 py-2 text-sm rounded font-mono transition-all cursor-pointer ${
                   settings.renderFrameRate === fps
                     ? "bg-white text-black font-bold"
                     : "bg-white/5 text-white/70 hover:bg-white/10"

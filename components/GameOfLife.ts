@@ -1,4 +1,6 @@
 import type p5 from "p5";
+import { decode } from "./presets/rle";
+import { getPresetRLE } from "./presets/index";
 
 export interface GameOfLifeConfig {
   cellSize: number;
@@ -194,18 +196,38 @@ export class Grid {
       return;
     }
 
-    if (name === "Gosper glider gun") {
+    if (name.toLowerCase() === "gosper glider gun") {
       this.spawnGliderGunAt(this.p.width / 2, this.p.height / 2);
       return;
     }
 
+    const rle = getPresetRLE(name);
     const cx = Math.floor((this.p.width / 2 - this.panX) / this.cellSize);
     const cy = Math.floor((this.p.height / 2 - this.panY) / this.cellSize);
-    const setAlive = (ox: number, oy: number) => {
-      this.alive.add(hashPair(cx + ox, cy + oy));
-    };
 
-    if (name === "R-pentomino") {
+    if (rle) {
+      const cells = decode(rle);
+      if (cells.length > 0) {
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const [x, y] of cells) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+        const width = maxX - minX + 1;
+        const height = maxY - minY + 1;
+        const offsetX = cx - Math.floor(width / 2) - minX;
+        const offsetY = cy - Math.floor(height / 2) - minY;
+
+        for (const [x, y] of cells) {
+          this.alive.add(hashPair(x + offsetX, y + offsetY));
+        }
+      }
+    } else if (name === "R-pentomino") {
+      const setAlive = (ox: number, oy: number) => {
+        this.alive.add(hashPair(cx + ox, cy + oy));
+      };
       setAlive(0, -1); setAlive(1, -1);
       setAlive(-1, 0); setAlive(0, 0);
       setAlive(0, 1);
