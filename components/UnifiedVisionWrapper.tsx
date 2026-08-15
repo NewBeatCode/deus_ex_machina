@@ -126,6 +126,9 @@ export const UnifiedVisionWrapper = ({
 
     let isMounted = true;
     let checkMl5: ReturnType<typeof setInterval>;
+    // Native body pose polling interval (hoisted so cleanup return can clear it)
+    let nativePoseInterval: ReturnType<typeof setInterval> | null = null;
+    const isTauri = !!(window as any).__TAURI__;
 
     // Inject ml5 script for Vite (non-Next) if not already loaded
     if (typeof window !== "undefined" && !(window as any).ml5) {
@@ -183,9 +186,39 @@ export const UnifiedVisionWrapper = ({
 
         // ML models
         let faceMesh: any;
-        let bodyPose: any;
         let handPose: any;
         let objectDetector: any;
+        // nativePoseInterval and isTauri are declared at the useEffect body level
+        // so the cleanup return function can access them.
+
+        // Apple Vision joint name → flat array index (matches MoveNet order).
+        // VNHumanBodyPoseObservation key raw-value strings are camelCase via rawValue.
+        const APPLE_JOINT_INDEX: Record<string, number> = {
+          nose: 0, leftEye: 1, rightEye: 2, leftEar: 3, rightEar: 4,
+          leftShoulder: 5, rightShoulder: 6,
+          leftElbow: 7, rightElbow: 8,
+          leftWrist: 9, rightWrist: 10,
+          leftHip: 11, rightHip: 12,
+          leftKnee: 13, rightKnee: 14,
+          leftAnkle: 15, rightAnkle: 16,
+          // aliases Vision may return
+          left_shoulder_1_joint: 5, right_shoulder_1_joint: 6,
+          left_forearm_joint: 7, right_forearm_joint: 8,
+          left_hand_joint: 9, right_hand_joint: 10,
+          left_upLeg_joint: 11, right_upLeg_joint: 12,
+          left_leg_joint: 13, right_leg_joint: 14,
+          left_foot_joint: 15, right_foot_joint: 16,
+          head_joint: 0, neck_joint: 6,
+        };
+        // Skeleton edge pairs using same indices (mirrors MoveNet getSkeleton output)
+        const APPLE_BODY_SKELETON: [number, number][] = [
+          [5, 7], [7, 9], [6, 8], [8, 10],   // arms
+          [5, 6],                               // shoulders
+          [5, 11], [6, 12],                    // torso sides
+          [11, 12],                             // hips
+          [11, 13], [13, 15], [12, 14], [14, 16], // legs
+          [0, 1], [0, 2], [1, 3], [2, 4],     // face
+        ];
 
         // Detection results
         let faces: any[] = [];
@@ -525,13 +558,86 @@ export const UnifiedVisionWrapper = ({
             await new Promise((resolve) => setTimeout(resolve, 100));
             updateStepStatus("ml5", "completed");
 
-            // Load models in parallel for faster initialization
-            updateStepStatus("movenet", "loading");
+            // ── Native Apple Vision body pose (replaces MoveNet) ───────────────
+            if (isTauri) {
+              updateStepStatus("movenet", "loading");
+              // Use a fixed skeleton — no getSkeleton() call needed
+              skeletonConnections = APPLE_BODY_SKELETON;
+
+              // Offscreen canvas for BGRA frame extraction
+              const offCanvas = document.createElement("canvas");
+              const offCtx = offCanvas.getContext("2d", { willReadFrequently: true });
+
+              // Dynamic import keeps the Tauri API out of the browser bundle
+              const { detectNativeVisionFrame } = await import("./nativeVision");
+
+              const runNativePose = async () => {
+                if (!video?.elt || video.elt.readyState < 2 || !offCtx) return;
+                const vw = video.elt.videoWidth  || CONFIG.video.width;
+                const vh = video.elt.videoHeight || CONFIG.video.height;
+                offCanvas.width  = vw;
+                offCanvas.height = vh;
+                offCtx.drawImage(video.elt, 0, 0, vw, vh);
+                const imgData = offCtx.getImageData(0, 0, vw, vh);
+                // ImageData is RGBA; Vision expects BGRA — swap R and B channels
+                const rgba = imgData.data;
+                const bgra = new Uint8Array(rgba.length);
+                for (let i = 0; i < rgba.length; i += 4) {
+                  bgra[i]     = rgba[i + 2]; // B
+                  bgra[i + 1] = rgba[i + 1]; // G
+                  bgra[i + 2] = rgba[i];     // R
+                  bgra[i + 3] = rgba[i + 3]; // A
+                }
+                try {
+                  const result = await detectNativeVisionFrame(bgra, vw, vh, vw * 4);
+                  if (result.error || !result.bodies?.length) {
+                    poses = [];
+                    return;
+                  }
+                  // Map Apple Vision bodies → poses[]
+                  // Coords are normalized 0-1; scale to pixel space and flip X
+                  // (Vision gives mirrored coords; video feed is already flipped)
+                  poses = result.bodies.map((body: any) => {
+                    // Build a 17-slot keypoints array (index matches MoveNet)
+                    const kps: any[] = Array.from({ length: 17 }, () => ({
+                      x: 0, y: 0, confidence: 0, name: ""
+                    }));
+                    for (const kp of body.keypoints) {
+                      const idx = APPLE_JOINT_INDEX[kp.name];
+                      if (idx !== undefined) {
+                        kps[idx] = {
+                          // Mirror X because Vision returns un-flipped coords
+                          x: (1 - kp.x) * vw,
+                          y: kp.y * vh,
+                          confidence: kp.confidence,
+                          name: kp.name,
+                        };
+                      }
+                    }
+                    return { keypoints: kps, confidence: body.confidence };
+                  });
+                } catch (e) {
+                  // IPC error — don't crash, just clear poses
+                  poses = [];
+                }
+              };
+
+              nativePoseInterval = setInterval(runNativePose, 100); // ~10 Hz
+              updateStepStatus("movenet", "completed");
+            } else {
+              // ── Browser fallback: ml5 MoveNet ────────────────────────────────
+              updateStepStatus("movenet", "loading");
+              const bp = await ml5.bodyPose("MoveNet", { flipped: true });
+              if (bp?.getSkeleton) skeletonConnections = bp.getSkeleton();
+              startDetection(bp, (r: any[]) => (poses = r));
+              updateStepStatus("movenet", "completed");
+            }
+
+            // ── ml5 hand + face (unchanged) ───────────────────────────────────
             updateStepStatus("handpose", "loading");
             updateStepStatus("facemesh", "loading");
 
-            const [bp, hp, fm] = await Promise.all([
-              ml5.bodyPose("MoveNet", { flipped: true }),
+            const [hp, fm] = await Promise.all([
               ml5.handPose({
                 flipped: true,
                 maxHands: 2,
@@ -543,12 +649,6 @@ export const UnifiedVisionWrapper = ({
               }),
               ml5.faceMesh(videoElt, { maxFaces: 1, flipped: true }),
             ]);
-
-            bodyPose = bp;
-            if (bodyPose?.getSkeleton)
-              skeletonConnections = bodyPose.getSkeleton();
-            startDetection(bodyPose, (r: any[]) => (poses = r));
-            updateStepStatus("movenet", "completed");
 
             handPose = hp;
             startDetection(handPose, (r: any[]) => (rawHands = r));
@@ -563,15 +663,52 @@ export const UnifiedVisionWrapper = ({
             mlControlRef.current = {
               pause: () => {
                 try { faceMesh?.detectStop?.(); } catch (_) {}
-                try { bodyPose?.detectStop?.(); } catch (_) {}
                 try { handPose?.detectStop?.(); } catch (_) {}
+                // Stop native body pose polling
+                if (nativePoseInterval !== null) {
+                  clearInterval(nativePoseInterval);
+                  nativePoseInterval = null;
+                }
                 faces = []; poses = []; rawHands = [];
               },
               resume: () => {
                 if (video?.elt?.readyState >= 2) {
                   try { faceMesh?.detectStart?.(video.elt, (r: any[]) => (faces = r)); } catch (_) {}
-                  try { bodyPose?.detectStart?.(video.elt, (r: any[]) => (poses = r)); } catch (_) {}
                   try { handPose?.detectStart?.(video.elt, (r: any[]) => (rawHands = r)); } catch (_) {}
+                  // Restart native body pose polling
+                  if (isTauri && nativePoseInterval === null) {
+                    import("./nativeVision").then(({ detectNativeVisionFrame: dvf }) => {
+                      const offC = document.createElement("canvas");
+                      const offX = offC.getContext("2d", { willReadFrequently: true });
+                      nativePoseInterval = setInterval(async () => {
+                        if (!video?.elt || video.elt.readyState < 2 || !offX) return;
+                        const vw = video.elt.videoWidth  || CONFIG.video.width;
+                        const vh = video.elt.videoHeight || CONFIG.video.height;
+                        offC.width = vw; offC.height = vh;
+                        offX.drawImage(video.elt, 0, 0, vw, vh);
+                        const id = offX.getImageData(0, 0, vw, vh);
+                        const rgba = id.data;
+                        const bgra = new Uint8Array(rgba.length);
+                        for (let i = 0; i < rgba.length; i += 4) {
+                          bgra[i] = rgba[i+2]; bgra[i+1] = rgba[i+1];
+                          bgra[i+2] = rgba[i]; bgra[i+3] = rgba[i+3];
+                        }
+                        try {
+                          const res = await dvf(bgra, vw, vh, vw * 4);
+                          if (!res.error && res.bodies?.length) {
+                            poses = res.bodies.map((body: any) => {
+                              const kps: any[] = Array.from({ length: 17 }, () => ({ x: 0, y: 0, confidence: 0, name: "" }));
+                              for (const kp of body.keypoints) {
+                                const idx = APPLE_JOINT_INDEX[kp.name];
+                                if (idx !== undefined) kps[idx] = { x: (1-kp.x)*vw, y: kp.y*vh, confidence: kp.confidence, name: kp.name };
+                              }
+                              return { keypoints: kps, confidence: body.confidence };
+                            });
+                          } else { poses = []; }
+                        } catch { poses = []; }
+                      }, 100);
+                    });
+                  }
                 }
               },
             };
@@ -1453,6 +1590,11 @@ export const UnifiedVisionWrapper = ({
         (window as any).__visHandler = null;
       }
       if (typeof checkMl5 !== "undefined") clearInterval(checkMl5);
+      // Stop native body pose polling if running
+      if (nativePoseInterval !== null) {
+        clearInterval(nativePoseInterval);
+        nativePoseInterval = null;
+      }
       if (p5Ref.current) {
         p5Ref.current.remove();
         p5Ref.current = null;
