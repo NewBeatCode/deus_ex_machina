@@ -36,7 +36,7 @@ export const UnifiedVisionWrapper = ({
     gridSize: 4,
     seed: "Random",
     objectDetection: false,
-    renderFrameRate: 60,
+    renderFrameRate: 15,
   },
 }: {
   settings?: VisionSettings;
@@ -312,34 +312,35 @@ export const UnifiedVisionWrapper = ({
         let handjetFont: any = null; // loaded locally in p.setup() via p.loadFont()
 
         // Pan physics: two phases.
-        // 1) DRAG phase -- a critically damped spring pulls the rendered pan
-        //    position toward the hand's raw target every frame: snappy,
-        //    attached, zero overshoot while actively grabbing.
-        // 2) THROW phase -- on release, real measured velocity (px/sec,
-        //    sampled from actual hand displacement while dragging) carries
-        //    the pan forward and decays under exponential friction, like a
-        //    native scroll-view fling. This is what makes inertia feel real
-        //    instead of the spring just running out of room to coast.
+        // 1) DRAG phase -- an underdamped elastic spring (zeta = 0.65) pulls the rendered pan
+        //    position toward the hand's raw target every frame. On direction changes, inertia
+        //    momentum carries the motion forward initially while the spring stretches, before
+        //    elastically curving back to track the moving hand.
+        // 2) THROW phase -- on release, physical velocity blended with sampled hand velocity
+        //    carries the pan forward and decays under exponential friction.
         let panTargetX = 0; // where the hand is pulling the grid to (accumulated)
         let panTargetY = 0;
         let panVelX = 0; // current pan velocity, px/sec (spring OR throw phase)
         let panVelY = 0;
-        const SPRING_STIFFNESS = 220; // higher = snappier drag follow
-        const SPRING_DAMPING = 2 * Math.sqrt(SPRING_STIFFNESS); // critical damping during drag
+        const SPRING_STIFFNESS = 200; // responsive follow with elastic spring easing
+        const SPRING_DAMPING_RATIO = 0.65; // underdamped (zeta < 1.0) for elastic spring-back
+        const SPRING_DAMPING = 2 * SPRING_DAMPING_RATIO * Math.sqrt(SPRING_STIFFNESS);
         const THROW_FRICTION = 0.05; // fraction of velocity retained per second (lower = stops sooner)
         const THROW_VEL_MIN = 4; // px/sec threshold to end the throw
         let isThrowing = false;
+        let wasActivelyDragging = false;
         let lastFrameMs = performance.now();
 
         // Rolling velocity sample, measured from real hand displacement
-        // while dragging (not spring output) -- this is the "how fast was
-        // the hand actually moving" signal used to seed the throw.
+        // while dragging -- used to seed/blend the throw phase on release.
         let sampleVelX = 0;
         let sampleVelY = 0;
-        const VEL_SAMPLE_SMOOTH = 0.3;
+        const VEL_SAMPLE_SMOOTH = 0.25;
         let effects: any[] = [];
         // Track last-set FPS so we avoid calling the p.frameRate() getter every frame.
-        let lastSetFps = settingsRef.current.renderFrameRate || 60;
+        let lastSetFps = mlPausedRef.current
+          ? 5
+          : (settingsRef.current.renderFrameRate || 15);
 
         class PinchEffect {
           x: number;
@@ -399,7 +400,11 @@ export const UnifiedVisionWrapper = ({
             }
           });
           p.pixelDensity(1);
-          p.frameRate(settingsRef.current.renderFrameRate || 60); // initial value; kept in sync live below
+          p.frameRate(
+            mlPausedRef.current
+              ? 5
+              : (settingsRef.current.renderFrameRate || 15)
+          ); // initial value; kept in sync live below
           // Set font for canvas drawing
           p.textFont("IBM Plex Mono, monospace");
 
@@ -609,7 +614,9 @@ export const UnifiedVisionWrapper = ({
           // settings panel value (cheap + idempotent to call every frame).
           // Avoid calling the p.frameRate() getter (which computes a rolling
           // average) on every frame. Only push a new value when it actually changed.
-          const desiredFps = settingsRef.current.renderFrameRate || 60;
+          const desiredFps = mlPausedRef.current
+            ? 5
+            : (settingsRef.current.renderFrameRate || 15);
           if (desiredFps !== lastSetFps) {
             p.frameRate(desiredFps);
             lastSetFps = desiredFps;
@@ -1165,15 +1172,28 @@ export const UnifiedVisionWrapper = ({
                 h.framesLost === 0,
             );
 
+          // When a new grab activates or re-grabs mid-throw:
+          // Synchronize target position to current grid position so drag starts smoothly,
+          // while preserving active velocity (panVelX, panVelY) so re-grabbing mid-throw
+          // elastically catches the fling without a sudden hard stop.
+          if (isActivelyDragging && !wasActivelyDragging && grid) {
+            panTargetX = grid.panX;
+            panTargetY = grid.panY;
+            isThrowing = false;
+          }
+          wasActivelyDragging = isActivelyDragging;
+
+          // The moment grab ends (hand released, lost, or no longer active),
+          // blend physical spring velocity with sampled hand velocity for the throw phase.
           if (!isActivelyDragging && !isThrowing && grid) {
-            panVelX = sampleVelX;
-            panVelY = sampleVelY;
+            panVelX = p.lerp(panVelX, sampleVelX, 0.5);
+            panVelY = p.lerp(panVelY, sampleVelY, 0.5);
             sampleVelX = 0;
             sampleVelY = 0;
             isThrowing = true;
           }
 
-          // Apply pan physics every frame: spring-follow while dragging,
+          // Apply pan physics every frame: underdamped elastic spring-follow while dragging,
           // measured-velocity throw with friction decay after release.
           if (grid) {
             const nowMs = performance.now();
@@ -1182,7 +1202,15 @@ export const UnifiedVisionWrapper = ({
             dtSec = Math.min(dtSec, 1 / 30); // clamp to avoid spikes on tab-switch/lag
 
             if (isActivelyDragging) {
-              // DRAG phase: critically damped spring toward panTarget.
+              // DRAG phase: underdamped elastic spring toward panTarget.
+              // On directional change, panVel preserves momentum in the old direction
+              // while the spring stretches and elastically curves back toward panTarget.
+              if (sampleVelX !== 0 || sampleVelY !== 0) {
+                const transferRate = Math.min(1.0, 0.20 * (dtSec * 60));
+                panVelX = p.lerp(panVelX, sampleVelX, transferRate);
+                panVelY = p.lerp(panVelY, sampleVelY, transferRate);
+              }
+
               const applySpringAxis = (
                 current: number,
                 target: number,
@@ -1236,7 +1264,6 @@ export const UnifiedVisionWrapper = ({
                 isThrowing = false;
               }
             }
-
           }
 
           // Creating cells with BOTH hands using a triangle gesture:
@@ -1443,16 +1470,30 @@ export const UnifiedVisionWrapper = ({
     mlPausedRef.current = next;
     setMlPaused(next);
     if (next) {
-      // Relaxed mode: stop all ML inference AND drop render FPS to 15.
+      // Relaxed mode: stop all ML inference AND drop render FPS to 5.
       // The GoL simulation keeps running (via its own 10 Hz internal throttle)
       // but the render loop does ~75% less GPU work.
       mlControlRef.current?.pause();
-      p5Ref.current?.frameRate(15);
+      p5Ref.current?.frameRate(5);
     } else {
       // Full mode: resume ML and restore the configured render frame rate.
       mlControlRef.current?.resume();
-      p5Ref.current?.frameRate(settingsRef.current.renderFrameRate || 60);
+      p5Ref.current?.frameRate(settingsRef.current.renderFrameRate || 15);
     }
+  }, []);
+
+  // Keyboard shortcut: Cmd+Shift+1 → toggle Play/Pause
+  const handleMlToggleRef = useRef(handleMlToggle);
+  handleMlToggleRef.current = handleMlToggle;
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.metaKey && e.shiftKey && e.key === "1") {
+        e.preventDefault();
+        handleMlToggleRef.current();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
   return (
