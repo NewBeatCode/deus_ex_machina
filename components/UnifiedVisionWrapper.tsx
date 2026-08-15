@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type p5 from "p5";
@@ -60,10 +61,11 @@ export const UnifiedVisionWrapper = ({
   } | null>(null);
 
   useEffect(() => {
-    if (JSON.stringify(settingsRef.current) !== JSON.stringify(settings)) {
-      settingsRef.current = settings;
+    const prev = settingsRef.current;
+    if (prev.gridSize !== settings.gridSize || prev.seed !== settings.seed) {
       needsResetRef.current = true;
     }
+    settingsRef.current = settings;
   }, [settings]);
 
   // Stats state
@@ -144,7 +146,7 @@ export const UnifiedVisionWrapper = ({
           video: true,
         });
         stream.getTracks().forEach((t) => t.stop());
-      } catch (err: any) {
+      } catch {
         if (isMounted) {
           setCameraError(
             "[browser] NotAllowedError: Permission denied by system",
@@ -154,14 +156,11 @@ export const UnifiedVisionWrapper = ({
 
       if (!isMounted) return;
       checkMl5 = setInterval(() => {
-        // @ts-ignore
-        if (window.ml5 && isMounted) {
+        if ((window as any).ml5 && isMounted) {
           clearInterval(checkMl5);
           // Force WebGL backend to avoid WebGPU sync warnings
-          // @ts-ignore
-          if (window.tf) {
-            // @ts-ignore
-            window.tf.setBackend("webgl").then(() => initSketch());
+          if ((window as any).tf) {
+            (window as any).tf.setBackend("webgl").then(() => initSketch());
           } else {
             initSketch();
           }
@@ -338,7 +337,7 @@ export const UnifiedVisionWrapper = ({
         // The "+N cells" label is drawn attached to the apex via a connector
         // stem so it reads as one object with the triangle, not a floating
         // separate label over the Game of Life canvas.
-        let triangleFlashes: any[] = [];
+        const triangleFlashes: any[] = [];
         const TRIANGLE_FLASH_DURATION = 1500; // 1000ms hold + 500ms fade
         const TRIANGLE_HOLD_DURATION = 1000;
         const TRIANGLE_FADE_DURATION = 500;
@@ -369,7 +368,7 @@ export const UnifiedVisionWrapper = ({
         let sampleVelX = 0;
         let sampleVelY = 0;
         const VEL_SAMPLE_SMOOTH = 0.25;
-        let effects: any[] = [];
+        const effects: any[] = [];
         // Track last-set FPS so we avoid calling the p.frameRate() getter every frame.
         let lastSetFps = mlPausedRef.current
           ? 5
@@ -550,13 +549,14 @@ export const UnifiedVisionWrapper = ({
             return;
           }
           const videoElt = video.elt;
-          // @ts-ignore
-          const ml5 = window.ml5;
+          const ml5 = (window as any).ml5;
 
           try {
             updateStepStatus("ml5", "loading");
             await new Promise((resolve) => setTimeout(resolve, 100));
             updateStepStatus("ml5", "completed");
+
+            let runNativePose: (() => Promise<void>) | null = null;
 
             // ── Native Apple Vision body pose (replaces MoveNet) ───────────────
             if (isTauri) {
@@ -571,24 +571,26 @@ export const UnifiedVisionWrapper = ({
               // Dynamic import keeps the Tauri API out of the browser bundle
               const { detectNativeVisionFrame } = await import("./nativeVision");
 
-              const runNativePose = async () => {
-                if (!video?.elt || video.elt.readyState < 2 || !offCtx) return;
-                const vw = video.elt.videoWidth  || CONFIG.video.width;
-                const vh = video.elt.videoHeight || CONFIG.video.height;
-                offCanvas.width  = vw;
-                offCanvas.height = vh;
-                offCtx.drawImage(video.elt, 0, 0, vw, vh);
-                const imgData = offCtx.getImageData(0, 0, vw, vh);
-                // ImageData is RGBA; Vision expects BGRA — swap R and B channels
-                const rgba = imgData.data;
-                const bgra = new Uint8Array(rgba.length);
-                for (let i = 0; i < rgba.length; i += 4) {
-                  bgra[i]     = rgba[i + 2]; // B
-                  bgra[i + 1] = rgba[i + 1]; // G
-                  bgra[i + 2] = rgba[i];     // R
-                  bgra[i + 3] = rgba[i + 3]; // A
-                }
+              let isDetecting = false;
+              runNativePose = async () => {
+                if (isDetecting || !video?.elt || video.elt.readyState < 2 || !offCtx) return;
+                isDetecting = true;
                 try {
+                  const vw = video.elt.videoWidth  || CONFIG.video.width;
+                  const vh = video.elt.videoHeight || CONFIG.video.height;
+                  offCanvas.width  = vw;
+                  offCanvas.height = vh;
+                  offCtx.drawImage(video.elt, 0, 0, vw, vh);
+                  const imgData = offCtx.getImageData(0, 0, vw, vh);
+                  // ImageData is RGBA; Vision expects BGRA — swap R and B channels
+                  const rgba = imgData.data;
+                  const bgra = new Uint8Array(rgba.length);
+                  for (let i = 0; i < rgba.length; i += 4) {
+                    bgra[i]     = rgba[i + 2]; // B
+                    bgra[i + 1] = rgba[i + 1]; // G
+                    bgra[i + 2] = rgba[i];     // R
+                    bgra[i + 3] = rgba[i + 3]; // A
+                  }
                   const result = await detectNativeVisionFrame(bgra, vw, vh, vw * 4);
                   if (result.error || !result.bodies?.length) {
                     poses = [];
@@ -616,9 +618,11 @@ export const UnifiedVisionWrapper = ({
                     }
                     return { keypoints: kps, confidence: body.confidence };
                   });
-                } catch (e) {
+                } catch {
                   // IPC error — don't crash, just clear poses
                   poses = [];
+                } finally {
+                  isDetecting = false;
                 }
               };
 
@@ -662,8 +666,8 @@ export const UnifiedVisionWrapper = ({
             // Expose pause/resume controls to the React layer
             mlControlRef.current = {
               pause: () => {
-                try { faceMesh?.detectStop?.(); } catch (_) {}
-                try { handPose?.detectStop?.(); } catch (_) {}
+                try { faceMesh?.detectStop?.(); } catch { /* ignore */ }
+                try { handPose?.detectStop?.(); } catch { /* ignore */ }
                 // Stop native body pose polling
                 if (nativePoseInterval !== null) {
                   clearInterval(nativePoseInterval);
@@ -673,41 +677,11 @@ export const UnifiedVisionWrapper = ({
               },
               resume: () => {
                 if (video?.elt?.readyState >= 2) {
-                  try { faceMesh?.detectStart?.(video.elt, (r: any[]) => (faces = r)); } catch (_) {}
-                  try { handPose?.detectStart?.(video.elt, (r: any[]) => (rawHands = r)); } catch (_) {}
+                  try { faceMesh?.detectStart?.(video.elt, (r: any[]) => (faces = r)); } catch { /* ignore */ }
+                  try { handPose?.detectStart?.(video.elt, (r: any[]) => (rawHands = r)); } catch { /* ignore */ }
                   // Restart native body pose polling
-                  if (isTauri && nativePoseInterval === null) {
-                    import("./nativeVision").then(({ detectNativeVisionFrame: dvf }) => {
-                      const offC = document.createElement("canvas");
-                      const offX = offC.getContext("2d", { willReadFrequently: true });
-                      nativePoseInterval = setInterval(async () => {
-                        if (!video?.elt || video.elt.readyState < 2 || !offX) return;
-                        const vw = video.elt.videoWidth  || CONFIG.video.width;
-                        const vh = video.elt.videoHeight || CONFIG.video.height;
-                        offC.width = vw; offC.height = vh;
-                        offX.drawImage(video.elt, 0, 0, vw, vh);
-                        const id = offX.getImageData(0, 0, vw, vh);
-                        const rgba = id.data;
-                        const bgra = new Uint8Array(rgba.length);
-                        for (let i = 0; i < rgba.length; i += 4) {
-                          bgra[i] = rgba[i+2]; bgra[i+1] = rgba[i+1];
-                          bgra[i+2] = rgba[i]; bgra[i+3] = rgba[i+3];
-                        }
-                        try {
-                          const res = await dvf(bgra, vw, vh, vw * 4);
-                          if (!res.error && res.bodies?.length) {
-                            poses = res.bodies.map((body: any) => {
-                              const kps: any[] = Array.from({ length: 17 }, () => ({ x: 0, y: 0, confidence: 0, name: "" }));
-                              for (const kp of body.keypoints) {
-                                const idx = APPLE_JOINT_INDEX[kp.name];
-                                if (idx !== undefined) kps[idx] = { x: (1-kp.x)*vw, y: kp.y*vh, confidence: kp.confidence, name: kp.name };
-                              }
-                              return { keypoints: kps, confidence: body.confidence };
-                            });
-                          } else { poses = []; }
-                        } catch { poses = []; }
-                      }, 100);
-                    });
+                  if (isTauri && runNativePose && nativePoseInterval === null) {
+                    nativePoseInterval = setInterval(runNativePose, 100);
                   }
                 }
               },
@@ -782,8 +756,7 @@ export const UnifiedVisionWrapper = ({
               !objectDetectorLoading
             ) {
               // Initialize if enabled but not loaded
-              // @ts-ignore
-              const ml5 = window.ml5;
+              const ml5 = (window as any).ml5;
               if (ml5 && video?.elt?.readyState === 4) {
                 objectDetectorLoading = true;
                 ml5

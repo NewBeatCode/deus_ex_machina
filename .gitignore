@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Tauri & Swift build artifacts
+src-tauri/target
+src-tauri/native/VisionBridge/.build
+*.tsbuildinfo
+.tmp
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -22,3 +28,4 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+

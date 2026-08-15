@@ -308,7 +308,7 @@ export class Grid {
         const maxY = minY + Math.ceil(this.p.height / cs) + 1;
 
         this.graphics.noStroke();
-        this.graphics.fill(this.config.colors.light as any);
+        this.graphics.fill(this.config.colors.light);
 
         for (const key of this.alive) {
           const x = getX(key);

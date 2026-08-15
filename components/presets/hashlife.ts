@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { encode, decode } from './rle'
 
 export class TreeNode {

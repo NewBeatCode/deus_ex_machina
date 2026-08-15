@@ -102,10 +102,16 @@ export const TerminalLoader = ({
       );
       if (allActuallyDone) {
         finishedRef.current = true;
-        setIsExiting(true);
-        setTimeout(() => {
+        const exitTimeout = setTimeout(() => {
+          setIsExiting(true);
+        }, 0);
+        const completeTimeout = setTimeout(() => {
           onComplete?.();
         }, 500);
+        return () => {
+          clearTimeout(exitTimeout);
+          clearTimeout(completeTimeout);
+        };
       }
     }
   }, [activeStepIndex, steps, stepProgress, onComplete, isLoaded]);
@@ -131,7 +137,7 @@ export const TerminalLoader = ({
 
         return (
           <div key={step.id} className="flex gap-4">
-            <span className="min-w-[100px]">
+            <span className="min-w-25">
               <Typewriter text={step.label} />
             </span>
             <span>{progress}%</span>
