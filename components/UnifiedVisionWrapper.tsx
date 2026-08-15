@@ -573,7 +573,7 @@ export const UnifiedVisionWrapper = ({
 
               let isDetecting = false;
               runNativePose = async () => {
-                if (isDetecting || !video?.elt || video.elt.readyState < 2 || !offCtx) return;
+                if (mlPausedRef.current || isDetecting || !video?.elt || video.elt.readyState < 2 || !offCtx) return;
                 isDetecting = true;
                 try {
                   const vw = video.elt.videoWidth  || CONFIG.video.width;
@@ -592,6 +592,10 @@ export const UnifiedVisionWrapper = ({
                     bgra[i + 3] = rgba[i + 3]; // A
                   }
                   const result = await detectNativeVisionFrame(bgra, vw, vh, vw * 4);
+                  if (mlPausedRef.current) {
+                    poses = [];
+                    return;
+                  }
                   if (result.error || !result.bodies?.length) {
                     poses = [];
                     return;
@@ -668,22 +672,73 @@ export const UnifiedVisionWrapper = ({
               pause: () => {
                 try { faceMesh?.detectStop?.(); } catch { /* ignore */ }
                 try { handPose?.detectStop?.(); } catch { /* ignore */ }
-                // Stop native body pose polling
+                try { objectDetector?.detectStop?.(); } catch { /* ignore */ }
+                // Stop native body pose polling (Apple Vision)
                 if (nativePoseInterval !== null) {
                   clearInterval(nativePoseInterval);
                   nativePoseInterval = null;
                 }
-                faces = []; poses = []; rawHands = [];
+                // Stop camera hardware device completely (turns off green indicator LED)
+                try {
+                  const stream = (video?.elt?.srcObject as MediaStream | null) ||
+                    (document.querySelector("video")?.srcObject as MediaStream | null);
+                  if (stream) {
+                    stream.getTracks().forEach((track) => {
+                      track.stop();
+                    });
+                  }
+                  if (video?.elt) {
+                    video.elt.srcObject = null;
+                    video.elt.pause();
+                  }
+                } catch { /* ignore */ }
+
+                faces = [];
+                poses = [];
+                rawHands = [];
+                hands = [];
+                objects = [];
+                handTracker.smoothed = [];
               },
               resume: () => {
-                if (video?.elt?.readyState >= 2) {
-                  try { faceMesh?.detectStart?.(video.elt, (r: any[]) => (faces = r)); } catch { /* ignore */ }
-                  try { handPose?.detectStart?.(video.elt, (r: any[]) => (rawHands = r)); } catch { /* ignore */ }
-                  // Restart native body pose polling
-                  if (isTauri && runNativePose && nativePoseInterval === null) {
-                    nativePoseInterval = setInterval(runNativePose, 100);
+                // Restart camera hardware capture and restart ML detectors
+                const startCameraAndResume = async () => {
+                  try {
+                    let stream = video?.elt?.srcObject as MediaStream | null;
+                    if (!stream || !stream.active || stream.getVideoTracks().length === 0) {
+                      stream = await navigator.mediaDevices.getUserMedia({
+                        video: {
+                          width: CONFIG.video.width,
+                          height: CONFIG.video.height,
+                        },
+                      });
+                      if (video?.elt) {
+                        video.elt.srcObject = stream;
+                        await video.elt.play();
+                      }
+                    }
+                  } catch (e) {
+                    console.warn("Failed to re-acquire camera on resume:", e);
                   }
-                }
+
+                  if (video?.elt && !mlPausedRef.current) {
+                    try { faceMesh?.detectStart?.(video.elt, (r: any[]) => (faces = r)); } catch { /* ignore */ }
+                    try { handPose?.detectStart?.(video.elt, (r: any[]) => (rawHands = r)); } catch { /* ignore */ }
+                    if (settingsRef.current.objectDetection && objectDetector) {
+                      try {
+                        objectDetector.detectStart(video.elt, (results: any[]) => {
+                          if (settingsRef.current.objectDetection) objects = results;
+                        });
+                      } catch { /* ignore */ }
+                    }
+                    // Restart native body pose polling (Apple Vision)
+                    if (isTauri && runNativePose && nativePoseInterval === null) {
+                      nativePoseInterval = setInterval(runNativePose, 100);
+                    }
+                  }
+                };
+
+                startCameraAndResume();
               },
             };
           } catch (err) {
@@ -1548,8 +1603,12 @@ export const UnifiedVisionWrapper = ({
         if (!p5Ref.current) return;
         if (document.hidden) {
           p5Ref.current.noLoop();
+          mlControlRef.current?.pause();
         } else {
           p5Ref.current.loop();
+          if (!mlPausedRef.current) {
+            mlControlRef.current?.resume();
+          }
         }
       };
       document.addEventListener("visibilitychange", handleVisibility);
