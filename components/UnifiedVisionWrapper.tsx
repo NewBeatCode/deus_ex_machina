@@ -135,7 +135,7 @@ export const UnifiedVisionWrapper = ({
     // Inject ml5 script for Vite (non-Next) if not already loaded
     if (typeof window !== "undefined" && !(window as any).ml5) {
       const ml5Script = document.createElement("script");
-      ml5Script.src = "https://unpkg.com/ml5@1.3.1/dist/ml5.min.js";
+      ml5Script.src = "/vendor/ml5.min.js";
       ml5Script.async = true;
       document.head.appendChild(ml5Script);
     }
