@@ -17,33 +17,20 @@ import CoreVideo
 // MARK: - Vision request handler (Neural Engine accelerated)
 
 public final class VisionEngine {
-    private let handPoseRequest = VNDetectHumanHandPoseRequest()
-    private let bodyPoseRequest = VNDetectHumanBodyPoseRequest()
-    private let faceRequest = VNDetectFaceLandmarksRequest()
+    private var bodyPoseRequest = VNDetectHumanBodyPoseRequest()
 
-    public init() {
-        handPoseRequest.maximumHandCount = 2
-    }
+    public init() {}
 
-    /// Runs all three Vision requests on a single BGRA pixel buffer.
-    /// Vision automatically dispatches to ANE/GPU/CPU based on model and
-    /// hardware availability -- no manual execution-provider selection needed.
+    /// Runs Vision body pose detection on a single BGRA pixel buffer.
+    /// Vision automatically dispatches to ANE/GPU/CPU based on hardware availability.
     public func detect(pixelBuffer: CVPixelBuffer) -> String {
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
         do {
-            try handler.perform([handPoseRequest, bodyPoseRequest, faceRequest])
+            try handler.perform([bodyPoseRequest])
         } catch {
-            return "{\"error\":\"\(error.localizedDescription)\"}"
-        }
-
-        var hands: [[String: Any]] = []
-        for observation in handPoseRequest.results ?? [] {
-            if let points = try? observation.recognizedPoints(.all) {
-                let kps = points.values.map { pt -> [String: Any] in
-                    ["x": pt.location.x, "y": 1 - pt.location.y, "confidence": pt.confidence]
-                }
-                hands.append(["keypoints": kps, "confidence": observation.confidence])
-            }
+            // Re-instantiate request in case internal state is corrupted
+            bodyPoseRequest = VNDetectHumanBodyPoseRequest()
+            return "{\"bodies\":[],\"error\":\"\(error.localizedDescription)\"}"
         }
 
         var bodies: [[String: Any]] = []
@@ -56,16 +43,10 @@ public final class VisionEngine {
             }
         }
 
-        var faces: [[String: Any]] = []
-        for observation in faceRequest.results ?? [] {
-            let bb = observation.boundingBox
-            faces.append(["x": bb.origin.x, "y": 1 - bb.origin.y - bb.height, "width": bb.width, "height": bb.height, "confidence": observation.confidence])
-        }
-
-        let payload: [String: Any] = ["hands": hands, "bodies": bodies, "faces": faces]
+        let payload: [String: Any] = ["hands": [], "bodies": bodies, "faces": []]
         guard let data = try? JSONSerialization.data(withJSONObject: payload),
               let json = String(data: data, encoding: .utf8) else {
-            return "{\"error\":\"serialization_failed\"}"
+            return "{\"bodies\":[],\"error\":\"serialization_failed\"}"
         }
         return json
     }
@@ -95,7 +76,14 @@ public func vision_bridge_detect_bgra(
 
     CVPixelBufferLockBaseAddress(buffer, [])
     if let dest = CVPixelBufferGetBaseAddress(buffer) {
-        memcpy(dest, bytes, Int(height) * Int(bytesPerRow))
+        let destBytesPerRow = CVPixelBufferGetBytesPerRow(buffer)
+        let srcBytesPerRow = Int(bytesPerRow)
+        let copyBytes = min(destBytesPerRow, srcBytesPerRow)
+        for row in 0..<Int(height) {
+            let destPtr = dest.advanced(by: row * destBytesPerRow)
+            let srcPtr = bytes.advanced(by: row * srcBytesPerRow)
+            memcpy(destPtr, srcPtr, copyBytes)
+        }
     }
     CVPixelBufferUnlockBaseAddress(buffer, [])
 
@@ -107,3 +95,4 @@ public func vision_bridge_detect_bgra(
 public func vision_bridge_free_string(_ ptr: UnsafeMutablePointer<CChar>?) {
     free(ptr)
 }
+
