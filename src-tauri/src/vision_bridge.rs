@@ -35,6 +35,18 @@ pub fn detect_frame(_bgra: &[u8], _width: i32, _height: i32, _bytes_per_row: i32
 }
 
 #[tauri::command]
-pub fn detect_vision_frame(bgra: Vec<u8>, width: i32, height: i32, bytes_per_row: i32) -> String {
-    detect_frame(&bgra, width, height, bytes_per_row)
+pub fn detect_vision_frame(
+    bgra: Vec<u8>,
+    width: i32,
+    height: i32,
+    bytes_per_row: i32,
+) -> serde_json::Value {
+    // The Swift bridge already returns a JSON string. Parsing it here once
+    // and returning a real serde_json::Value lets Tauri's IPC layer
+    // serialize a structured object directly, instead of the JS side having
+    // to JSON.parse() a string that Tauri itself already JSON-encoded.
+    let raw = detect_frame(&bgra, width, height, bytes_per_row);
+    serde_json::from_str(&raw).unwrap_or_else(|_| {
+        serde_json::json!({ "error": "invalid_json_from_native_bridge" })
+    })
 }
