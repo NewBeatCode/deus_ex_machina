@@ -321,9 +321,12 @@ export const UnifiedVisionWrapper = ({
                 this.smoothed.push(newSH);
               }
             }
-            this.smoothed = this.smoothed.filter(
-              (h: any) => h.framesLost < this.maxPersistence,
-            );
+            // Splice expired entries in-place (backwards) to avoid a GC allocation each frame
+            for (let i = this.smoothed.length - 1; i >= 0; i--) {
+              if (this.smoothed[i].framesLost >= this.maxPersistence) {
+                this.smoothed.splice(i, 1);
+              }
+            }
           },
         };
 
@@ -588,6 +591,8 @@ export const UnifiedVisionWrapper = ({
               let isDetecting = false;
               let consecutiveNativeErrors = 0;
               let bodyPoseFramesLost = 0;
+              // Pre-allocated BGRA buffer — reused every frame to avoid GC churn at 10 Hz
+              let bgraBuffer: Uint8Array | null = null;
 
               runNativePose = async () => {
                 if (mlPausedRef.current || isDetecting || !video?.elt || video.elt.readyState < 2 || !offCtx) return;
@@ -611,10 +616,15 @@ export const UnifiedVisionWrapper = ({
                   offCtx.drawImage(video.elt, 0, 0, procW, procH);
                   const imgData = offCtx.getImageData(0, 0, procW, procH);
 
-                  // ImageData is RGBA; Vision expects BGRA — swap R and B channels
+                  // ImageData is RGBA; Vision expects BGRA — swap R and B channels.
+                  // Reuse the same buffer across frames to avoid GC allocations at 10 Hz.
                   const rgba = imgData.data;
-                  const bgra = new Uint8Array(rgba.length);
-                  for (let i = 0; i < rgba.length; i += 4) {
+                  const needed = rgba.length;
+                  if (!bgraBuffer || bgraBuffer.length !== needed) {
+                    bgraBuffer = new Uint8Array(needed);
+                  }
+                  const bgra = bgraBuffer;
+                  for (let i = 0; i < needed; i += 4) {
                     bgra[i]     = rgba[i + 2]; // B
                     bgra[i + 1] = rgba[i + 1]; // G
                     bgra[i + 2] = rgba[i];     // R
@@ -903,12 +913,13 @@ export const UnifiedVisionWrapper = ({
           drawHands(); // Drawn after others to be on top
           p.pop();
 
-          // Draw feedback effects in screen space (outside video transformation)
-          effects.forEach((eff, i) => {
-            eff.update();
-            eff.draw(p);
-            if (eff.alpha <= 0) effects.splice(i, 1);
-          });
+          // Draw feedback effects in screen space (outside video transformation).
+          // Iterate backwards so splicing doesn't skip the next item.
+          for (let i = effects.length - 1; i >= 0; i--) {
+            effects[i].update();
+            effects[i].draw(p);
+            if (effects[i].alpha <= 0) effects.splice(i, 1);
+          }
 
           // Draw triangle flashes: persists for TRIANGLE_FLASH_DURATION ms,
           // fading out, with the "+N cells" label connected to the apex by
@@ -976,23 +987,7 @@ export const UnifiedVisionWrapper = ({
           // Stats HUD only needs ~2 updates/sec — no need for 12×/sec React re-renders.
           if (p.frameCount % 30 === 0 && isMounted) {
             // Stats Calculations
-            const uptime = ((Date.now() - startTimeRef.current) / 1000).toFixed(
-              1,
-            );
-
-            // Calculate average confidence for each model
-            const getAvgConf = (items: any[], isFace: boolean = false) => {
-              if (items.length === 0) return 0;
-              const sum = items.reduce((acc, curr) => {
-                // Try standard fields, fallback to high confidence if detected but properties missing
-                const val =
-                  curr.confidence ||
-                  curr.score ||
-                  (isFace ? 0.98 + Math.random() * 0.01 : 0);
-                return acc + val;
-              }, 0);
-              return (sum / items.length) * 100;
-            };
+            const uptime = ((Date.now() - startTimeRef.current) / 1000).toFixed(1);
 
             // Stats Calculations
             const aliveCells = grid ? grid.aliveCount : 0;
@@ -1041,8 +1036,12 @@ export const UnifiedVisionWrapper = ({
               },
               confidence: {
                 faces: 0,
-                hands: Math.round(getAvgConf(hands)),
-                bodies: Math.round(getAvgConf(poses)),
+                hands: hands.length > 0
+                  ? Math.round(hands.reduce((s: number, h: any) => s + (h.confidence || 0), 0) / hands.length * 100)
+                  : 0,
+                bodies: poses.length > 0
+                  ? Math.round(poses.reduce((s: number, b: any) => s + (b.confidence || 0), 0) / poses.length * 100)
+                  : 0,
               },
             });
           }
@@ -1052,6 +1051,9 @@ export const UnifiedVisionWrapper = ({
           if (!faces.length || !triangles.length) return;
           const face = faces[0];
           if (!face?.keypoints) return;
+          // Hoist DOM reads once — the value cannot change mid-frame
+          const vidW = video?.elt?.width || CONFIG.video.width;
+          const vidH = video?.elt?.height || CONFIG.video.height;
           p.push();
           p.beginShape(p.TRIANGLES);
           for (const tri of triangles) {
@@ -1063,8 +1065,6 @@ export const UnifiedVisionWrapper = ({
             if (!ptA || !ptB || !ptC) continue;
             const cx = Math.floor((ptA.x + ptB.x + ptC.x) / 3),
               cy = Math.floor((ptA.y + ptB.y + ptC.y) / 3);
-            const vidW = video?.elt?.width || CONFIG.video.width;
-            const vidH = video?.elt?.height || CONFIG.video.height;
             if (cx >= 0 && cx < vidW && cy >= 0 && cy < vidH) {
               p.fill(0);
               p.stroke(255);
@@ -1640,9 +1640,10 @@ export const UnifiedVisionWrapper = ({
           // Get native context for dotted lines
           const ctx = p.drawingContext as CanvasRenderingContext2D;
 
+          // Hoist DOM read outside the loop — value never changes mid-frame
+          const vidW = video?.elt?.width || CONFIG.video.width;
           for (const obj of objects) {
             // Flip x-coordinate for mirrored video as COCO-SSD might not mirror coordinates internally
-            const vidW = video?.elt?.width || CONFIG.video.width;
             const objX = vidW - obj.x - obj.width;
             const objY = obj.y;
 
