@@ -26,7 +26,7 @@ export const SettingsModal: FC<SettingsModalProps> = ({ isOpen, onClose, setting
   const presetCategories = getAllPresetCategories();
 
   return (
-    <div className="fixed inset-0 z-200 flex items-center justify-center backdrop-blur-xs" onClick={onClose}>
+    <div className="fixed inset-0 z-200 flex items-center justify-center" onClick={onClose}>
       <div 
         className="w-full max-w-sm bg-[#1a1a1a] border border-white/10 rounded-xl p-6 shadow-2xl space-y-6"
         onClick={(e) => e.stopPropagation()}

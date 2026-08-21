@@ -29,7 +29,7 @@ export default function VisionPage() {
       <button
         onClick={() => setShowSettings(true)}
         aria-label="Settings"
-        className="fixed bottom-6 right-6 z-150 p-3 rounded-full bg-white/10 hover:bg-white/20 text-white transition-all backdrop-blur-sm group cursor-pointer"
+        className="fixed bottom-6 right-6 z-150 p-3 rounded-full bg-white/10 hover:bg-white/20 text-white transition-all group cursor-pointer"
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"

@@ -1132,23 +1132,41 @@ export const UnifiedVisionWrapper = ({
           };
 
           let isTrianglePose = false;
-          if (eligibleHands.length === 2) {
-            const [handA, handB] = eligibleHands;
-            const aThumb = handA.thumb_tip;
-            const aIndex = handA.index_finger_tip;
-            const bThumb = handB.thumb_tip;
-            const bIndex = handB.index_finger_tip;
+          const leftHandForPose = eligibleHands.find((h) => h.handedness === "Left");
+          const rightHandForPose = eligibleHands.find((h) => h.handedness === "Right");
+          if (leftHandForPose && rightHandForPose) {
+            const aThumb = leftHandForPose.thumb_tip;
+            const aIndex = leftHandForPose.index_finger_tip;
+            const bThumb = rightHandForPose.thumb_tip;
+            const bIndex = rightHandForPose.index_finger_tip;
+            const aWrist = leftHandForPose.keypoints[0];
+            const bWrist = rightHandForPose.keypoints[0];
+            const aPalm = leftHandForPose.keypoints[9];
+            const bPalm = rightHandForPose.keypoints[9];
 
+            const palmSizeA = getPalmSize(leftHandForPose);
+            const palmSizeB = getPalmSize(rightHandForPose);
+            const avgPalmSize = (palmSizeA + palmSizeB) / 2;
+
+            const wristDist = p.dist(aWrist.x, aWrist.y, bWrist.x, bWrist.y);
+            const palmDist = p.dist(aPalm.x, aPalm.y, bPalm.x, bPalm.y);
             const thumbDist = p.dist(aThumb.x, aThumb.y, bThumb.x, bThumb.y);
             const indexDist = p.dist(aIndex.x, aIndex.y, bIndex.x, bIndex.y);
             const aPinchDist = p.dist(aThumb.x, aThumb.y, aIndex.x, aIndex.y);
             const bPinchDist = p.dist(bThumb.x, bThumb.y, bIndex.x, bIndex.y);
 
+            const minWristDist = Math.max(50, avgPalmSize * 0.75);
+            const minPalmDist = Math.max(40, avgPalmSize * 0.55);
+            const maxTouchDist = Math.max(30, avgPalmSize * 0.38);
+            const minOwnGap = Math.max(28, avgPalmSize * 0.3);
+
             isTrianglePose =
-              thumbDist < 25 &&
-              indexDist < 25 &&
-              aPinchDist < 70 &&
-              bPinchDist < 70;
+              wristDist > minWristDist &&
+              palmDist > minPalmDist &&
+              thumbDist < maxTouchDist &&
+              indexDist < maxTouchDist &&
+              aPinchDist > minOwnGap &&
+              bPinchDist > minOwnGap;
           }
 
           for (const h of hands) {
@@ -1437,15 +1455,16 @@ export const UnifiedVisionWrapper = ({
           // otherwise two closed fists brought close together can falsely
           // satisfy the thumb/index proximity checks below.
           //
-          // CRITICAL: must be two DISTINCT physical hands, not just two
-          // tracked entries. The stability tracker can briefly hold a stale
-          // duplicate/ghost entry for a single hand (framesLost <= 1 during
-          // a flicker), and two near-identical overlapping entries can
-          // trivially satisfy the thumb/index proximity checks below,
-          // producing a false one-hand "triangle". Requiring opposite
-          // handedness (Left vs Right) guarantees two real separate hands.
+          // CRITICAL: must be two DISTINCT physical hands (Left vs Right),
+          // actively detected in the current frame (framesLost === 0),
+          // with physically separated wrists/palms so single-hand tracking
+          // artifacts/ghosts NEVER satisfy the triangle condition.
           const eligibleForTriangle = hands.filter(
-            (h) => h.confidence > 0.1 && h.framesLost <= 1,
+            (h) =>
+              h.confidence > 0.3 &&
+              h.framesLost === 0 &&
+              h.thumb_tip &&
+              h.index_finger_tip,
           );
 
           const leftHand = eligibleForTriangle.find(
@@ -1476,22 +1495,39 @@ export const UnifiedVisionWrapper = ({
               const aIndex = handA.index_finger_tip;
               const bThumb = handB.thumb_tip;
               const bIndex = handB.index_finger_tip;
+              const aWrist = handA.keypoints[0];
+              const bWrist = handB.keypoints[0];
+              const aPalm = handA.keypoints[9];
+              const bPalm = handB.keypoints[9];
+
+              const palmSizeA = getPalmSize(handA);
+              const palmSizeB = getPalmSize(handB);
+              const avgPalmSize = (palmSizeA + palmSizeB) / 2;
+
+              // Physical separation: two distinct physical hands MUST have separated wrists & palms
+              const wristDist = p.dist(aWrist.x, aWrist.y, bWrist.x, bWrist.y);
+              const palmDist = p.dist(aPalm.x, aPalm.y, bPalm.x, bPalm.y);
+              const minWristDist = Math.max(50, avgPalmSize * 0.75);
+              const minPalmDist = Math.max(40, avgPalmSize * 0.55);
+              const distinctHands = wristDist > minWristDist && palmDist > minPalmDist;
 
               // Extra safeguard: require each hand's OWN thumb-index gap to be
-              // open enough that it isn't itself curled into a fist shape,
+              // open enough that it isn't itself curled into a fist shape or single-hand pinch,
               // even if the grab hysteresis hasn't flagged it yet.
               const aOwnPinch = p.dist(aThumb.x, aThumb.y, aIndex.x, aIndex.y);
               const bOwnPinch = p.dist(bThumb.x, bThumb.y, bIndex.x, bIndex.y);
-              const handsNotCurled = aOwnPinch > 30 && bOwnPinch > 30;
+              const minOwnGap = Math.max(28, avgPalmSize * 0.3);
+              const handsNotCurled = aOwnPinch > minOwnGap && bOwnPinch > minOwnGap;
 
-              // Triangle detection: thumbs touching AND indexes touching (actual contact)
+              // Triangle detection: thumbs touching AND indexes touching (actual contact across both hands)
               const thumbDist = p.dist(aThumb.x, aThumb.y, bThumb.x, bThumb.y);
               const indexDist = p.dist(aIndex.x, aIndex.y, bIndex.x, bIndex.y);
 
-              const thumbsTouching = thumbDist < 25;
-              const indexesTouching = indexDist < 25;
+              const maxTouchDist = Math.max(30, avgPalmSize * 0.38);
+              const thumbsTouching = thumbDist < maxTouchDist;
+              const indexesTouching = indexDist < maxTouchDist;
               const triangleReady =
-                thumbsTouching && indexesTouching && handsNotCurled;
+                distinctHands && thumbsTouching && indexesTouching && handsNotCurled;
 
               // Triangle geometry: thumbs form the base, midpoint of indexes is the apex
               const triCenterX =
@@ -1499,15 +1535,13 @@ export const UnifiedVisionWrapper = ({
               const triCenterY =
                 (aThumb.y + bThumb.y + (aIndex.y + bIndex.y) / 2) / 3;
 
-              const aWrist = handA.keypoints[0];
-              const bWrist = handB.keypoints[0];
               const apexX = (aIndex.x + bIndex.x) / 2;
               const apexY = (aIndex.y + bIndex.y) / 2;
 
               // Require a much more explicit "open back up" motion before the
               // next triangle can spawn again. Using BOTH distances avoids
               // re-arming from a tiny wobble in just one fingertip pair.
-              const TRIANGLE_REARM_DIST = 120;
+              const TRIANGLE_REARM_DIST = Math.max(100, avgPalmSize * 1.2);
               const triangleReleased =
                 thumbDist > TRIANGLE_REARM_DIST &&
                 indexDist > TRIANGLE_REARM_DIST;
