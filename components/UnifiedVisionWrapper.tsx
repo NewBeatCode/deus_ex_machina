@@ -187,6 +187,7 @@ export const UnifiedVisionWrapper = ({
         let faceMesh: any;
         let handPose: any;
         let objectDetector: any;
+        let bodyPose: any;
         // nativePoseInterval and isTauri are declared at the useEffect body level
         // so the cleanup return function can access them.
 
@@ -631,15 +632,28 @@ export const UnifiedVisionWrapper = ({
                     bgra[i + 3] = rgba[i + 3]; // A
                   }
 
-                  // 400ms timeout protection so an IPC stall can never permanently lock detection
-                  const timeoutPromise = new Promise<import("./nativeVision").NativeVisionResult>((_, reject) =>
-                    setTimeout(() => reject(new Error("Native vision timeout")), 400),
+                  // 400ms timeout protection so an IPC stall can never permanently lock detection.
+                  // The timer is explicitly cleared once inference resolves so a healthy 10Hz loop
+                  // doesn't leave hundreds of dangling setTimeout handles alive over a long session.
+                  let nativeVisionTimeout: ReturnType<typeof setTimeout> | undefined;
+                  const timeoutPromise = new Promise<import("./nativeVision").NativeVisionResult>(
+                    (_, reject) => {
+                      nativeVisionTimeout = setTimeout(
+                        () => reject(new Error("Native vision timeout")),
+                        400,
+                      );
+                    },
                   );
 
-                  const result = await Promise.race([
-                    detectNativeVisionFrame(bgra, procW, procH, procW * 4),
-                    timeoutPromise,
-                  ]);
+                  let result: import("./nativeVision").NativeVisionResult;
+                  try {
+                    result = await Promise.race([
+                      detectNativeVisionFrame(bgra, procW, procH, procW * 4),
+                      timeoutPromise,
+                    ]);
+                  } finally {
+                    if (nativeVisionTimeout) clearTimeout(nativeVisionTimeout);
+                  }
 
                   consecutiveNativeErrors = 0;
 
@@ -691,9 +705,9 @@ export const UnifiedVisionWrapper = ({
             } else {
               // ── Browser fallback: ml5 MoveNet ────────────────────────────────
               updateStepStatus("movenet", "loading");
-              const bp = await ml5.bodyPose("MoveNet", { flipped: true });
-              if (bp?.getSkeleton) skeletonConnections = bp.getSkeleton();
-              startDetection(bp, (r: any[]) => (poses = r));
+              bodyPose = await ml5.bodyPose("MoveNet", { flipped: true });
+              if (bodyPose?.getSkeleton) skeletonConnections = bodyPose.getSkeleton();
+              startDetection(bodyPose, (r: any[]) => (poses = r));
               updateStepStatus("movenet", "completed");
             }
 
@@ -728,6 +742,7 @@ export const UnifiedVisionWrapper = ({
               pause: () => {
                 try { faceMesh?.detectStop?.(); } catch { /* ignore */ }
                 try { handPose?.detectStop?.(); } catch { /* ignore */ }
+                try { bodyPose?.detectStop?.(); } catch { /* ignore */ }
                 try { objectDetector?.detectStop?.(); } catch { /* ignore */ }
                 // Stop native body pose polling (Apple Vision)
                 if (nativePoseInterval !== null) {
@@ -780,6 +795,7 @@ export const UnifiedVisionWrapper = ({
                   if (video?.elt && !mlPausedRef.current) {
                     try { faceMesh?.detectStart?.(video.elt, (r: any[]) => (faces = r)); } catch { /* ignore */ }
                     try { handPose?.detectStart?.(video.elt, (r: any[]) => (rawHands = r)); } catch { /* ignore */ }
+                    try { bodyPose?.detectStart?.(video.elt, (r: any[]) => (poses = r)); } catch { /* ignore */ }
                     if (settingsRef.current.objectDetection && objectDetector) {
                       try {
                         objectDetector.detectStart(video.elt, (results: any[]) => {
@@ -1051,28 +1067,28 @@ export const UnifiedVisionWrapper = ({
           if (!faces.length || !triangles.length) return;
           const face = faces[0];
           if (!face?.keypoints) return;
-          // Hoist DOM reads once — the value cannot change mid-frame
-          const vidW = video?.elt?.width || CONFIG.video.width;
-          const vidH = video?.elt?.height || CONFIG.video.height;
+
+          // Hoist DOM reads once (the value cannot change mid-frame)
+          const vidW = video?.elt?.width ?? CONFIG.video.width;
+          const vidH = video?.elt?.height ?? CONFIG.video.height;
+
           p.push();
+          // Canvas state set once for the whole mesh instead of once per triangle
+          p.fill(0);
+          p.stroke(255);
+          p.strokeWeight(0.5);
           p.beginShape(p.TRIANGLES);
           for (const tri of triangles) {
             if (!tri || tri.length < 3) continue;
             const [a, b, c] = tri;
-            const ptA = face.keypoints[a],
-              ptB = face.keypoints[b],
-              ptC = face.keypoints[c];
+            const ptA = face.keypoints[a], ptB = face.keypoints[b], ptC = face.keypoints[c];
             if (!ptA || !ptB || !ptC) continue;
-            const cx = Math.floor((ptA.x + ptB.x + ptC.x) / 3),
-              cy = Math.floor((ptA.y + ptB.y + ptC.y) / 3);
-            if (cx >= 0 && cx < vidW && cy >= 0 && cy < vidH) {
-              p.fill(0);
-              p.stroke(255);
-              p.strokeWeight(0.5);
-              p.vertex(ptA.x, ptA.y);
-              p.vertex(ptB.x, ptB.y);
-              p.vertex(ptC.x, ptC.y);
-            }
+            const cx = Math.floor((ptA.x + ptB.x + ptC.x) / 3);
+            const cy = Math.floor((ptA.y + ptB.y + ptC.y) / 3);
+            if (cx < 0 || cx > vidW || cy < 0 || cy > vidH) continue;
+            p.vertex(ptA.x, ptA.y);
+            p.vertex(ptB.x, ptB.y);
+            p.vertex(ptC.x, ptC.y);
           }
           p.endShape();
           p.pop();
